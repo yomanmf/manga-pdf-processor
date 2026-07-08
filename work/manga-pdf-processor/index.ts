@@ -2194,9 +2194,9 @@ const htmlContent = `<!DOCTYPE html>
         try {
 
           const finalZip =
-            sendToKindleForRun
-              ? null
-              : new JSZip();
+            createFinalZip(
+              sendToKindleForRun
+            );
 
           const mergeCollector =
             await createPdfMergeCollector(
@@ -2248,16 +2248,11 @@ const htmlContent = `<!DOCTYPE html>
 
             if (!response.ok) {
 
-              let errorText =
-                "Chapter download failed";
-
-              try {
-                const errorData =
-                  await response.json();
-                errorText =
-                  errorData.error ||
-                  errorText;
-              } catch (_) {}
+              const errorText =
+                await readErrorTextFromResponse(
+                  response,
+                  "Chapter download failed"
+                );
 
               throw new Error(
                 chapter.title +
@@ -2327,17 +2322,8 @@ const htmlContent = `<!DOCTYPE html>
 
           if (!sendToKindleForRun) {
 
-            const blob =
-              await finalZip.generateAsync({
-                type: "blob",
-                compression: "DEFLATE",
-                compressionOptions: {
-                  level: 6
-                }
-              });
-
-            triggerBlobDownload(
-              blob,
+            await downloadFinalZip(
+              finalZip,
               sanitizeClientFileName(
                 weebMangaTitle +
                 " " +
@@ -2354,22 +2340,10 @@ const htmlContent = `<!DOCTYPE html>
           }
 
 
-          progressScreen.classList.remove(
-            "show"
-          );
-          successScreen.classList.add("show");
-          successFileCount.textContent =
-            selectedChapters.length;
-          successOutputCount.textContent =
-            outputCount;
-          downloadStatus.textContent =
+          showProcessingSuccess(
+            selectedChapters.length,
+            outputCount,
             sendToKindleForRun
-              ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
-              : "Archive downloaded. Kindle auto-send is off.";
-
-          setSuccessKindleSummary(
-            sendToKindleForRun,
-            outputCount
           );
 
         } catch (error) {
@@ -2587,9 +2561,9 @@ const htmlContent = `<!DOCTYPE html>
 
         try {
           const finalZip =
-            sendToKindleForRun
-              ? null
-              : new JSZip();
+            createFinalZip(
+              sendToKindleForRun
+            );
 
           const mergeCollector =
             await createPdfMergeCollector(
@@ -2646,20 +2620,11 @@ const htmlContent = `<!DOCTYPE html>
 
             if (!response.ok) {
 
-              let errorText =
-                "Processing error";
-
-
-              try {
-
-                const errorData =
-                  await response.json();
-
-                errorText =
-                  errorData.error ||
-                  errorText;
-
-              } catch (_) {}
+              const errorText =
+                await readErrorTextFromResponse(
+                  response,
+                  "Processing error"
+                );
 
 
               throw new Error(
@@ -2727,17 +2692,8 @@ const htmlContent = `<!DOCTYPE html>
             progressText.textContent =
               "Creating archive...";
 
-            const blob =
-              await finalZip.generateAsync({
-                type: "blob",
-                compression: "DEFLATE",
-                compressionOptions: {
-                  level: 6
-                }
-              });
-
-            triggerBlobDownload(
-              blob,
+            await downloadFinalZip(
+              finalZip,
               buildArchiveBaseName(
                 selectedFiles
               ) +
@@ -2747,32 +2703,10 @@ const htmlContent = `<!DOCTYPE html>
           }
 
 
-          progressScreen.classList.remove(
-            "show"
-          );
-
-
-          successScreen.classList.add(
-            "show"
-          );
-
-
-          successFileCount.textContent =
-            selectedFiles.length;
-
-
-          successOutputCount.textContent =
-            outputCount;
-
-
-          downloadStatus.textContent =
+          showProcessingSuccess(
+            selectedFiles.length,
+            outputCount,
             sendToKindleForRun
-              ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
-              : "Archive downloaded. Kindle auto-send is off.";
-
-          setSuccessKindleSummary(
-            sendToKindleForRun,
-            outputCount
           );
 
         } catch (error) {
@@ -2976,6 +2910,103 @@ const htmlContent = `<!DOCTYPE html>
         },
         1000
       );
+
+    }
+
+
+    function createFinalZip(
+      sendToKindleForRun
+    ) {
+
+      return sendToKindleForRun
+        ? null
+        : new JSZip();
+
+    }
+
+
+    async function createZipBlob(
+      zip
+    ) {
+
+      return zip.generateAsync({
+        type: "blob",
+        compression: "DEFLATE",
+        compressionOptions: {
+          level: 6
+        }
+      });
+
+    }
+
+
+    async function downloadFinalZip(
+      zip,
+      fileName
+    ) {
+
+      const blob =
+        await createZipBlob(
+          zip
+        );
+
+      triggerBlobDownload(
+        blob,
+        fileName
+      );
+
+    }
+
+
+    function showProcessingSuccess(
+      processedCount,
+      outputCount,
+      sendToKindleForRun
+    ) {
+
+      progressScreen.classList.remove(
+        "show"
+      );
+
+      successScreen.classList.add(
+        "show"
+      );
+
+      successFileCount.textContent =
+        processedCount;
+
+      successOutputCount.textContent =
+        outputCount;
+
+      downloadStatus.textContent =
+        sendToKindleForRun
+          ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
+          : "Archive downloaded. Kindle auto-send is off.";
+
+      setSuccessKindleSummary(
+        sendToKindleForRun,
+        outputCount
+      );
+
+    }
+
+
+    async function readErrorTextFromResponse(
+      response,
+      fallback
+    ) {
+
+      try {
+        const errorData =
+          await response.json();
+
+        return (
+          errorData.error ||
+          fallback
+        );
+      } catch (_) {
+        return fallback;
+      }
 
     }
 
