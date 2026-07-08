@@ -3079,78 +3079,79 @@ const htmlContent = `<!DOCTYPE html>
       }
 
 
-      async function addCollectorOperationToPdf(
+      function shouldRenderCollectorSingleAsSpread(
+        item
+      ) {
+
+        return Boolean(
+          combineAcrossSources &&
+          item.isVertical
+        );
+
+      }
+
+
+      async function addCollectorSingleAsSpread(
         targetPdf,
-        operation
+        item
+      ) {
+
+        const pageWidth =
+          item.width * 2;
+
+        const pageHeight =
+          item.height;
+
+        assertClientPdfPageSize(
+          pageWidth,
+          pageHeight,
+          "Single manga spread"
+        );
+
+        const embeddedPage =
+          await targetPdf.embedPage(
+            item.page
+          );
+
+        const spreadPage =
+          targetPdf.addPage([
+            pageWidth,
+            pageHeight
+          ]);
+
+        spreadPage.drawPage(
+          embeddedPage,
+          {
+            x:
+              item.width,
+
+            y: 0,
+
+            width:
+              item.width,
+
+            height:
+              item.height
+          }
+        );
+
+      }
+
+
+      async function addCollectorSinglePage(
+        targetPdf,
+        item
       ) {
 
         if (
-          operation.type === "single"
+          shouldRenderCollectorSingleAsSpread(
+            item
+          )
         ) {
 
-          const item =
-            operation.item;
-
-
-          if (
-            combineAcrossSources &&
-            item.isVertical
-          ) {
-
-            const pageWidth =
-              item.width * 2;
-
-            const pageHeight =
-              item.height;
-
-            assertClientPdfPageSize(
-              pageWidth,
-              pageHeight,
-              "Single manga spread"
-            );
-
-            const embeddedPage =
-              await targetPdf.embedPage(
-                item.page
-              );
-
-            const spreadPage =
-              targetPdf.addPage([
-                pageWidth,
-                pageHeight
-              ]);
-
-            spreadPage.drawPage(
-              embeddedPage,
-              {
-                x:
-                  item.width,
-
-                y: 0,
-
-                width:
-                  item.width,
-
-                height:
-                  item.height
-              }
-            );
-
-            return;
-
-          }
-
-
-          const copiedPages =
-            await targetPdf.copyPages(
-              item.sourcePdf,
-              [
-                item.pageIndex
-              ]
-            );
-
-          targetPdf.addPage(
-            copiedPages[0]
+          await addCollectorSingleAsSpread(
+            targetPdf,
+            item
           );
 
           return;
@@ -3158,11 +3159,26 @@ const htmlContent = `<!DOCTYPE html>
         }
 
 
-        const first =
-          operation.first;
+        const copiedPages =
+          await targetPdf.copyPages(
+            item.sourcePdf,
+            [
+              item.pageIndex
+            ]
+          );
 
-        const second =
-          operation.second;
+        targetPdf.addPage(
+          copiedPages[0]
+        );
+
+      }
+
+
+      async function addCollectorPairAsRightToLeftSpread(
+        targetPdf,
+        first,
+        second
+      ) {
 
         const pageWidth =
           first.width +
@@ -3233,6 +3249,40 @@ const htmlContent = `<!DOCTYPE html>
             height:
               first.height
           }
+        );
+
+      }
+
+
+      async function addCollectorOperationToPdf(
+        targetPdf,
+        operation
+      ) {
+
+        if (
+          operation.type === "single"
+        ) {
+
+          await addCollectorSinglePage(
+            targetPdf,
+            operation.item
+          );
+
+          return;
+
+        }
+
+
+        const first =
+          operation.first;
+
+        const second =
+          operation.second;
+
+        await addCollectorPairAsRightToLeftSpread(
+          targetPdf,
+          first,
+          second
         );
 
       }
@@ -5323,6 +5373,65 @@ async function processCbzFile(
    ============================================================ */
 
 
+function createSingleOperation(
+  item
+) {
+
+  return {
+
+    type: "single",
+
+    item
+
+  };
+
+}
+
+
+function createPairOperation(
+  first,
+  second
+) {
+
+  return {
+
+    type: "pair",
+
+    first,
+
+    second
+
+  };
+
+}
+
+
+function isVerticalPageItem(
+  item
+) {
+
+  return item.width <= item.height;
+
+}
+
+
+function shouldPairPageItems(
+  first,
+  second,
+  shouldMerge
+) {
+
+  return Boolean(
+    shouldMerge &&
+    first &&
+    second &&
+    isVerticalPageItem(first) &&
+    isVerticalPageItem(second)
+  );
+
+}
+
+
 function buildOperations(
   items,
   shouldMerge
@@ -5345,13 +5454,11 @@ function buildOperations(
     Обычно это обложка.
   */
 
-  operations.push({
-
-    type: "single",
-
-    item: items[0]
-
-  });
+  operations.push(
+    createSingleOperation(
+      items[0]
+    )
+  );
 
 
   let i = 1;
@@ -5369,47 +5476,31 @@ function buildOperations(
       items[i + 1];
 
 
-    const currentHorizontal =
-      current.width >
-      current.height;
-
-
-    const nextHorizontal =
-      next
-        ? next.width >
-          next.height
-        : false;
-
-
     if (
-      shouldMerge &&
-      next &&
-      !currentHorizontal &&
-      !nextHorizontal
+      shouldPairPageItems(
+        current,
+        next,
+        shouldMerge
+      )
     ) {
 
-      operations.push({
-
-        type: "pair",
-
-        first: current,
-
-        second: next
-
-      });
+      operations.push(
+        createPairOperation(
+          current,
+          next
+        )
+      );
 
 
       i += 2;
 
     } else {
 
-      operations.push({
-
-        type: "single",
-
-        item: current
-
-      });
+      operations.push(
+        createSingleOperation(
+          current
+        )
+      );
 
 
       i += 1;
@@ -5628,52 +5719,33 @@ async function writeOperationsToZip({
    ============================================================ */
 
 
-async function addPdfOperation(
+async function addSinglePdfPageOperation(
   targetPdf,
   sourcePdf,
-  operation
+  item
 ) {
 
-  /*
-    Обычная страница:
-    просто копируем ее.
-  */
-
-  if (
-    operation.type ===
-    "single"
-  ) {
-
-    const copiedPages =
-      await targetPdf.copyPages(
-        sourcePdf,
-        [
-          operation.item.index
-        ]
-      );
-
-
-    targetPdf.addPage(
-      copiedPages[0]
+  const copiedPages =
+    await targetPdf.copyPages(
+      sourcePdf,
+      [
+        item.index
+      ]
     );
 
 
-    return;
+  targetPdf.addPage(
+    copiedPages[0]
+  );
 
-  }
-
-
-  /*
-    Склейка двух вертикальных страниц.
-  */
-
-  const first =
-    operation.first;
+}
 
 
-  const second =
-    operation.second;
-
+async function addPdfPairAsRightToLeftSpread(
+  targetPdf,
+  first,
+  second
+) {
 
   const pageWidth =
     first.width +
@@ -5756,13 +5828,9 @@ async function addPdfOperation(
 }
 
 
-/* ============================================================
-   ADD CBZ IMAGES
-   ============================================================ */
-
-
-async function addImageOperation(
+async function addPdfOperation(
   targetPdf,
+  sourcePdf,
   operation
 ) {
 
@@ -5771,51 +5839,73 @@ async function addImageOperation(
     "single"
   ) {
 
-    const image =
-      operation.item;
-
-
-    const embedded =
-      await embedImage(
-        targetPdf,
-        image
-      );
-
-
-    const page =
-      targetPdf.addPage([
-        image.width,
-        image.height
-      ]);
-
-
-    page.drawImage(
-      embedded,
-      {
-        x: 0,
-        y: 0,
-
-        width:
-          image.width,
-
-        height:
-          image.height
-      }
+    await addSinglePdfPageOperation(
+      targetPdf,
+      sourcePdf,
+      operation.item
     );
-
 
     return;
 
   }
 
 
-  const first =
-    operation.first;
+  await addPdfPairAsRightToLeftSpread(
+    targetPdf,
+    operation.first,
+    operation.second
+  );
+
+}
 
 
-  const second =
-    operation.second;
 
+/* ============================================================
+   ADD CBZ IMAGES
+   ============================================================ */
+
+
+async function addSingleImagePageOperation(
+  targetPdf,
+  image
+) {
+
+  const embedded =
+    await embedImage(
+      targetPdf,
+      image
+    );
+
+
+  const page =
+    targetPdf.addPage([
+      image.width,
+      image.height
+    ]);
+
+
+  page.drawImage(
+    embedded,
+    {
+      x: 0,
+      y: 0,
+
+      width:
+        image.width,
+
+      height:
+        image.height
+    }
+  );
+
+}
+
+
+async function addImagePairAsRightToLeftSpread(
+  targetPdf,
+  first,
+  second
+) {
 
   const pageWidth =
     first.width +
@@ -5895,6 +5985,35 @@ async function addImageOperation(
       height:
         first.height
     }
+  );
+
+}
+
+
+async function addImageOperation(
+  targetPdf,
+  operation
+) {
+
+  if (
+    operation.type ===
+    "single"
+  ) {
+
+    await addSingleImagePageOperation(
+      targetPdf,
+      operation.item
+    );
+
+    return;
+
+  }
+
+
+  await addImagePairAsRightToLeftSpread(
+    targetPdf,
+    operation.first,
+    operation.second
   );
 
 }
