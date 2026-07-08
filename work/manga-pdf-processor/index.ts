@@ -4215,116 +4215,10 @@ app.get(
       ).trim();
 
 
-      if (query.length < 2) {
-        return c.json({
-          results: []
-        });
-      }
-
-
-      if (query.length > 120) {
-        throw new Error(
-          "Search query is too long"
+      const results =
+        await searchWeebCentralSeries(
+          query
         );
-      }
-
-
-      const response = await fetch(
-        "https://weebcentral.com/search/simple?location=main",
-        {
-          method: "POST",
-          headers: {
-            "User-Agent":
-              "Mozilla/5.0 Manga PDF Processor",
-            "Accept": "text/html",
-            "Content-Type":
-              "application/x-www-form-urlencoded;charset=UTF-8",
-            "HX-Request": "true",
-            "Origin":
-              "https://weebcentral.com",
-            "Referer":
-              "https://weebcentral.com/search"
-          },
-          body: new URLSearchParams({
-            text: query
-          }).toString()
-        }
-      );
-
-
-      if (!response.ok) {
-        throw new Error(
-          "WeebCentral returned HTTP " +
-          response.status
-        );
-      }
-
-
-      const searchHtml =
-        await response.text();
-
-      const results = [];
-      const seenSeriesIds = new Set();
-
-      const seriesPattern =
-        /<a\b[^>]*href="(https:\/\/weebcentral\.com\/series\/([0-9A-HJKMNP-TV-Z]{26})[^\"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
-
-      let seriesMatch;
-
-
-      while (
-        results.length < 10 &&
-        (
-          seriesMatch =
-            seriesPattern.exec(
-              searchHtml
-            )
-        ) !== null
-      ) {
-
-        const seriesId =
-          seriesMatch[2];
-
-
-        if (seenSeriesIds.has(seriesId)) {
-          continue;
-        }
-
-
-        const itemHtml =
-          seriesMatch[3];
-
-        const titleMatch =
-          itemHtml.match(
-            /alt="([^\"]+?) cover"/i
-          );
-
-        const title = decodeHtmlText(
-          titleMatch
-            ? titleMatch[1]
-            : stripHtmlTags(itemHtml)
-        ).trim();
-
-
-        if (!title) {
-          continue;
-        }
-
-
-        const url = decodeHtmlText(
-          seriesMatch[1]
-        );
-
-        getWeebCentralSeriesId(url);
-
-        seenSeriesIds.add(seriesId);
-
-        results.push({
-          title,
-          url
-        });
-
-      }
 
 
       return c.json({
@@ -4363,96 +4257,17 @@ app.get(
       const seriesUrl =
         c.req.query("url");
 
-      const seriesId =
-        getWeebCentralSeriesId(
+      const series =
+        await loadWeebCentralSeries(
           seriesUrl
         );
 
 
-      const canonicalUrl =
-        "https://weebcentral.com/series/" +
-        seriesId;
-
-
-      const seriesHtml =
-        await fetchWeebCentralText(
-          canonicalUrl
-        );
-
-
-      const titleMatch =
-        seriesHtml.match(
-          /<meta property="og:title" content="([^"]+?)(?: \| Weeb Central)?">/i
-        );
-
-
-      const title = decodeHtmlText(
-        titleMatch
-          ? titleMatch[1]
-          : "Manga"
-      );
-
-
-      const chapterHtml =
-        await fetchWeebCentralText(
-          canonicalUrl +
-          "/full-chapter-list",
-          {
-            "HX-Request": "true"
-          }
-        );
-
-
-      const chapters = [];
-
-      const chapterPattern =
-        /href="https:\/\/weebcentral\.com\/chapters\/([0-9A-HJKMNP-TV-Z]{26})"[\s\S]*?<span class="">\s*([^<]+?)\s*<\/span>[\s\S]*?<time[^>]*datetime="([^"]*)"/gi;
-
-      let chapterMatch;
-
-
-      while (
-        (
-          chapterMatch =
-            chapterPattern.exec(
-              chapterHtml
-            )
-        ) !== null
-      ) {
-
-        chapters.push({
-          id: chapterMatch[1],
-          title: decodeHtmlText(
-            chapterMatch[2].trim()
-          ),
-          date: chapterMatch[3]
-            ? chapterMatch[3].slice(0, 10)
-            : ""
-        });
-
-      }
-
-
-      chapters.reverse();
-
-
-      chapters.forEach(
-        function (chapter, index) {
-          chapter.index = index + 1;
-        }
-      );
-
-
-      if (chapters.length === 0) {
-        throw new Error(
-          "No chapters found"
-        );
-      }
-
-
       return c.json({
-        title,
-        chapters
+        title:
+          series.title,
+        chapters:
+          series.chapters
       });
 
     } catch (error) {
@@ -4488,7 +4303,7 @@ app.post(
 
 
       if (
-        !/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(
+        !isValidWeebCentralChapterId(
           chapterId
         )
       ) {
@@ -4517,109 +4332,10 @@ app.post(
         body.shouldMerge !== false;
 
 
-      const imageListHtml =
-        await fetchWeebCentralText(
-          "https://weebcentral.com/chapters/" +
-          chapterId +
-          "/images?is_prev=False&" +
-          "current_page=1&" +
-          "reading_style=long_strip",
-          {
-            "HX-Request": "true"
-          }
+      const images =
+        await downloadWeebCentralChapterImages(
+          chapterId
         );
-
-
-      const imageUrls = [];
-      const imagePattern =
-        /<img[\s\S]*?\ssrc="([^"]+)"/gi;
-
-      let imageMatch;
-
-
-      while (
-        (
-          imageMatch =
-            imagePattern.exec(
-              imageListHtml
-            )
-        ) !== null
-      ) {
-
-        const imageUrl =
-          decodeHtmlText(
-            imageMatch[1]
-          );
-
-        assertSafeRemoteImageUrl(
-          imageUrl
-        );
-
-        imageUrls.push(imageUrl);
-
-      }
-
-
-      if (imageUrls.length === 0) {
-        throw new Error(
-          "No chapter images found"
-        );
-      }
-
-
-      const images = [];
-
-
-      for (
-        let i = 0;
-        i < imageUrls.length;
-        i++
-      ) {
-
-        const imageUrl =
-          imageUrls[i];
-
-        const response =
-          await fetch(imageUrl, {
-            headers: {
-              "User-Agent":
-                "Mozilla/5.0 Manga PDF Processor",
-              "Referer":
-                "https://weebcentral.com/chapters/" +
-                chapterId
-            }
-          });
-
-
-        if (!response.ok) {
-          throw new Error(
-            "Image " +
-            (i + 1) +
-            " download failed: HTTP " +
-            response.status
-          );
-        }
-
-
-        const buffer =
-          Buffer.from(
-            await response.arrayBuffer()
-          );
-
-
-        images.push(
-          await normalizeImageForPdf(
-            buffer,
-            "page_" +
-              String(i + 1)
-                .padStart(4, "0") +
-              getImageExtensionFromUrl(
-                imageUrl
-              )
-          )
-        );
-
-      }
 
 
       const session = {
@@ -4934,6 +4650,502 @@ async function fetchKindleWorker(
    ============================================================ */
 
 
+const WEEBCENTRAL_BASE_URL =
+  "https://weebcentral.com";
+
+const WEEBCENTRAL_USER_AGENT =
+  "Mozilla/5.0 Manga PDF Processor";
+
+
+function getWeebCentralSeriesUrl(
+  seriesId
+) {
+
+  return (
+    WEEBCENTRAL_BASE_URL +
+    "/series/" +
+    seriesId
+  );
+
+}
+
+
+function getWeebCentralChapterUrl(
+  chapterId
+) {
+
+  return (
+    WEEBCENTRAL_BASE_URL +
+    "/chapters/" +
+    chapterId
+  );
+
+}
+
+
+function assertWeebCentralSearchQuery(
+  query
+) {
+
+  if (query.length > 120) {
+    throw new Error(
+      "Search query is too long"
+    );
+  }
+
+}
+
+
+function isValidWeebCentralChapterId(
+  value
+) {
+
+  return /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(
+    String(value || "")
+  );
+
+}
+
+
+async function searchWeebCentralSeries(
+  query
+) {
+
+  if (query.length < 2) {
+    return [];
+  }
+
+
+  assertWeebCentralSearchQuery(
+    query
+  );
+
+
+  const searchHtml =
+    await fetchWeebCentralSearchHtml(
+      query
+    );
+
+
+  return parseWeebCentralSearchResults(
+    searchHtml
+  );
+
+}
+
+
+async function fetchWeebCentralSearchHtml(
+  query
+) {
+
+  const response = await fetch(
+    WEEBCENTRAL_BASE_URL +
+      "/search/simple?location=main",
+    {
+      method: "POST",
+      headers: {
+        "User-Agent":
+          WEEBCENTRAL_USER_AGENT,
+        "Accept": "text/html",
+        "Content-Type":
+          "application/x-www-form-urlencoded;charset=UTF-8",
+        "HX-Request": "true",
+        "Origin":
+          WEEBCENTRAL_BASE_URL,
+        "Referer":
+          WEEBCENTRAL_BASE_URL +
+          "/search"
+      },
+      body: new URLSearchParams({
+        text: query
+      }).toString()
+    }
+  );
+
+
+  if (!response.ok) {
+    throw new Error(
+      "WeebCentral returned HTTP " +
+      response.status
+    );
+  }
+
+
+  return response.text();
+
+}
+
+
+function parseWeebCentralSearchResults(
+  searchHtml
+) {
+
+  const results = [];
+  const seenSeriesIds = new Set();
+
+  const seriesPattern =
+    /<a\b[^>]*href="(https:\/\/weebcentral\.com\/series\/([0-9A-HJKMNP-TV-Z]{26})[^\"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+  let seriesMatch;
+
+
+  while (
+    results.length < 10 &&
+    (
+      seriesMatch =
+        seriesPattern.exec(
+          searchHtml
+        )
+    ) !== null
+  ) {
+
+    const seriesId =
+      seriesMatch[2];
+
+
+    if (seenSeriesIds.has(seriesId)) {
+      continue;
+    }
+
+
+    const itemHtml =
+      seriesMatch[3];
+
+    const title =
+      getWeebCentralSearchResultTitle(
+        itemHtml
+      );
+
+
+    if (!title) {
+      continue;
+    }
+
+
+    const url = decodeHtmlText(
+      seriesMatch[1]
+    );
+
+    getWeebCentralSeriesId(url);
+
+    seenSeriesIds.add(seriesId);
+
+    results.push({
+      title,
+      url
+    });
+
+  }
+
+
+  return results;
+
+}
+
+
+function getWeebCentralSearchResultTitle(
+  itemHtml
+) {
+
+  const titleMatch =
+    itemHtml.match(
+      /alt="([^\"]+?) cover"/i
+    );
+
+
+  return decodeHtmlText(
+    titleMatch
+      ? titleMatch[1]
+      : stripHtmlTags(itemHtml)
+  ).trim();
+
+}
+
+
+async function loadWeebCentralSeries(
+  seriesUrl
+) {
+
+  const seriesId =
+    getWeebCentralSeriesId(
+      seriesUrl
+    );
+
+
+  const canonicalUrl =
+    getWeebCentralSeriesUrl(
+      seriesId
+    );
+
+
+  const seriesHtml =
+    await fetchWeebCentralText(
+      canonicalUrl
+    );
+
+
+  const chapterHtml =
+    await fetchWeebCentralText(
+      canonicalUrl +
+      "/full-chapter-list",
+      {
+        "HX-Request": "true"
+      }
+    );
+
+
+  const chapters =
+    parseWeebCentralChapters(
+      chapterHtml
+    );
+
+
+  if (chapters.length === 0) {
+    throw new Error(
+      "No chapters found"
+    );
+  }
+
+
+  return {
+    title:
+      parseWeebCentralSeriesTitle(
+        seriesHtml
+      ),
+    chapters
+  };
+
+}
+
+
+function parseWeebCentralSeriesTitle(
+  seriesHtml
+) {
+
+  const titleMatch =
+    seriesHtml.match(
+      /<meta property="og:title" content="([^"]+?)(?: \| Weeb Central)?">/i
+    );
+
+
+  return decodeHtmlText(
+    titleMatch
+      ? titleMatch[1]
+      : "Manga"
+  );
+
+}
+
+
+function parseWeebCentralChapters(
+  chapterHtml
+) {
+
+  const chapters = [];
+
+  const chapterPattern =
+    /href="https:\/\/weebcentral\.com\/chapters\/([0-9A-HJKMNP-TV-Z]{26})"[\s\S]*?<span class="">\s*([^<]+?)\s*<\/span>[\s\S]*?<time[^>]*datetime="([^"]*)"/gi;
+
+  let chapterMatch;
+
+
+  while (
+    (
+      chapterMatch =
+        chapterPattern.exec(
+          chapterHtml
+        )
+    ) !== null
+  ) {
+
+    chapters.push({
+      id: chapterMatch[1],
+      title: decodeHtmlText(
+        chapterMatch[2].trim()
+      ),
+      date: chapterMatch[3]
+        ? chapterMatch[3].slice(0, 10)
+        : ""
+    });
+
+  }
+
+
+  chapters.reverse();
+
+
+  chapters.forEach(
+    function (chapter, index) {
+      chapter.index = index + 1;
+    }
+  );
+
+
+  return chapters;
+
+}
+
+
+async function downloadWeebCentralChapterImages(
+  chapterId
+) {
+
+  const imageUrls =
+    await loadWeebCentralChapterImageUrls(
+      chapterId
+    );
+
+  const images = [];
+
+
+  for (
+    let i = 0;
+    i < imageUrls.length;
+    i++
+  ) {
+
+    images.push(
+      await downloadWeebCentralChapterImage(
+        imageUrls[i],
+        chapterId,
+        i
+      )
+    );
+
+  }
+
+
+  return images;
+
+}
+
+
+async function loadWeebCentralChapterImageUrls(
+  chapterId
+) {
+
+  const imageListHtml =
+    await fetchWeebCentralText(
+      getWeebCentralChapterUrl(
+        chapterId
+      ) +
+      "/images?is_prev=False&" +
+      "current_page=1&" +
+      "reading_style=long_strip",
+      {
+        "HX-Request": "true"
+      }
+    );
+
+
+  const imageUrls =
+    parseWeebCentralImageUrls(
+      imageListHtml
+    );
+
+
+  if (imageUrls.length === 0) {
+    throw new Error(
+      "No chapter images found"
+    );
+  }
+
+
+  return imageUrls;
+
+}
+
+
+function parseWeebCentralImageUrls(
+  imageListHtml
+) {
+
+  const imageUrls = [];
+  const imagePattern =
+    /<img[\s\S]*?\ssrc="([^"]+)"/gi;
+
+  let imageMatch;
+
+
+  while (
+    (
+      imageMatch =
+        imagePattern.exec(
+          imageListHtml
+        )
+    ) !== null
+  ) {
+
+    const imageUrl =
+      decodeHtmlText(
+        imageMatch[1]
+      );
+
+    assertSafeRemoteImageUrl(
+      imageUrl
+    );
+
+    imageUrls.push(imageUrl);
+
+  }
+
+
+  return imageUrls;
+
+}
+
+
+async function downloadWeebCentralChapterImage(
+  imageUrl,
+  chapterId,
+  zeroBasedIndex
+) {
+
+  const pageNumber =
+    zeroBasedIndex + 1;
+
+  const response =
+    await fetch(imageUrl, {
+      headers: {
+        "User-Agent":
+          WEEBCENTRAL_USER_AGENT,
+        "Referer":
+          getWeebCentralChapterUrl(
+            chapterId
+          )
+      }
+    });
+
+
+  if (!response.ok) {
+    throw new Error(
+      "Image " +
+      pageNumber +
+      " download failed: HTTP " +
+      response.status
+    );
+  }
+
+
+  const buffer =
+    Buffer.from(
+      await response.arrayBuffer()
+    );
+
+
+  return normalizeImageForPdf(
+    buffer,
+    "page_" +
+      String(pageNumber)
+        .padStart(4, "0") +
+      getImageExtensionFromUrl(
+        imageUrl
+      )
+  );
+
+}
+
+
 function getWeebCentralSeriesId(
   value
 ) {
@@ -4990,7 +5202,7 @@ async function fetchWeebCentralText(
   const response = await fetch(url, {
     headers: {
       "User-Agent":
-        "Mozilla/5.0 Manga PDF Processor",
+        WEEBCENTRAL_USER_AGENT,
       "Accept": "text/html",
       ...extraHeaders
     }
