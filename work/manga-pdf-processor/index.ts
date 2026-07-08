@@ -4297,9 +4297,8 @@ app.post(
         );
 
 
-      const session = {
-        zip: new JSZip()
-      };
+      const session =
+        createZipSession();
 
 
       const outputCount =
@@ -4328,24 +4327,18 @@ app.post(
 
 
       const archiveData =
-        await session.zip.generateAsync({
-          type: "arraybuffer",
-          compression: "DEFLATE",
-          compressionOptions: {
-            level: 6
-          }
-        });
+        await generateZipArchive(
+          session
+        );
 
 
       return c.body(
         archiveData,
         {
-          headers: {
-            "Content-Type":
-              "application/zip",
-            "X-Output-Count":
-              String(outputCount)
-          }
+          headers:
+            createZipArchiveHeaders(
+              outputCount
+            )
         }
       );
 
@@ -4380,155 +4373,297 @@ app.post(
       const formData =
         await c.req.formData();
 
-
-      const file =
-        formData.get("file");
-
-
-      const shouldMerge =
-        formData.get(
-          "shouldMerge"
-        ) === "true";
-
-
-      if (
-        !file ||
-        typeof file === "string"
-      ) {
-
-        return c.json(
-          {
-            error:
-              "Missing file"
-          },
-          400
-        );
-
-      }
-
-
-      const session =
-        {
-          zip: new JSZip()
-        };
-
-
-      const fileName =
-        file.name || "input";
-
-
-      const baseFileName =
-        getBaseFileName(
-          fileName
-        );
-
-
-      const inputBytes =
-        await file.arrayBuffer();
-
-
-      const lowerName =
-        fileName.toLowerCase();
-
-
-      let outputCount = 0;
-
-
-      if (
-        lowerName.endsWith(".pdf")
-      ) {
-
-        outputCount =
-          await processPdfFile(
-            inputBytes,
-            baseFileName,
-            shouldMerge,
-            session
-          );
-
-      } else if (
-        lowerName.endsWith(".cbz")
-      ) {
-
-        outputCount =
-          await processCbzFile(
-            inputBytes,
-            baseFileName,
-            shouldMerge,
-            session
-          );
-
-      } else {
-
-        return c.json(
-          {
-            error:
-              "Unsupported file type"
-          },
-          400
-        );
-
-      }
-
-
-      if (outputCount < 1) {
-
-        return c.json(
-          {
-            error:
-              "No pages or images found"
-          },
-          400
-        );
-
-      }
-
-
-      const archiveData =
-        await session.zip.generateAsync(
-          {
-            type: "arraybuffer",
-            compression: "DEFLATE",
-            compressionOptions: {
-              level: 6
-            }
-          }
+      const result =
+        await processUploadedArchive(
+          formData
         );
 
 
       return c.body(
-        archiveData,
+        result.archiveData,
         {
-          headers: {
-            "Content-Type":
-              "application/zip",
-            "X-Output-Count":
-              String(outputCount)
-          }
+          headers:
+            createZipArchiveHeaders(
+              result.outputCount
+            )
         }
       );
 
     } catch (error) {
 
-      console.error(
-        "Error in /process:",
-        error
-      );
+      const status =
+        getRouteErrorStatus(error);
+
+
+      if (status >= 500) {
+
+        console.error(
+          "Error in /process:",
+          error
+        );
+
+      }
 
 
       return c.json(
         {
           error:
-            error.message ||
-            "Processing error"
+            getRouteErrorMessage(
+              error,
+              "Processing error"
+            )
         },
-        500
+        status
       );
 
     }
 
   }
 );
+
+
+/* ============================================================
+   UPLOAD ARCHIVE HELPERS
+   ============================================================ */
+
+
+async function processUploadedArchive(
+  formData
+) {
+
+  const input =
+    getUploadedArchiveInput(
+      formData
+    );
+
+  const session =
+    createZipSession();
+
+  const outputCount =
+    await processUploadedFile(
+      input.file,
+      input.shouldMerge,
+      session
+    );
+
+
+  if (outputCount < 1) {
+
+    throw createRouteError(
+      "No pages or images found",
+      400
+    );
+
+  }
+
+
+  return {
+    archiveData:
+      await generateZipArchive(
+        session
+      ),
+    outputCount
+  };
+
+}
+
+
+function getUploadedArchiveInput(
+  formData
+) {
+
+  const file =
+    formData.get("file");
+
+
+  if (
+    !file ||
+    typeof file === "string"
+  ) {
+
+    throw createRouteError(
+      "Missing file",
+      400
+    );
+
+  }
+
+
+  return {
+    file,
+    shouldMerge:
+      formData.get(
+        "shouldMerge"
+      ) === "true"
+  };
+
+}
+
+
+async function processUploadedFile(
+  file,
+  shouldMerge,
+  session
+) {
+
+  const fileName =
+    file.name || "input";
+
+  const baseFileName =
+    getBaseFileName(
+      fileName
+    );
+
+  const inputBytes =
+    await file.arrayBuffer();
+
+  const lowerName =
+    fileName.toLowerCase();
+
+
+  if (
+    lowerName.endsWith(".pdf")
+  ) {
+
+    return processPdfFile(
+      inputBytes,
+      baseFileName,
+      shouldMerge,
+      session
+    );
+
+  }
+
+
+  if (
+    lowerName.endsWith(".cbz")
+  ) {
+
+    return processCbzFile(
+      inputBytes,
+      baseFileName,
+      shouldMerge,
+      session
+    );
+
+  }
+
+
+  throw createRouteError(
+    "Unsupported file type",
+    400
+  );
+
+}
+
+
+function createZipSession() {
+
+  return {
+    zip: new JSZip()
+  };
+
+}
+
+
+async function generateZipArchive(
+  session
+) {
+
+  return session.zip.generateAsync({
+    type: "arraybuffer",
+    compression: "DEFLATE",
+    compressionOptions: {
+      level: 6
+    }
+  });
+
+}
+
+
+function createZipArchiveHeaders(
+  outputCount
+) {
+
+  return {
+    "Content-Type":
+      "application/zip",
+    "X-Output-Count":
+      String(outputCount)
+  };
+
+}
+
+
+function createRouteError(
+  message,
+  status
+) {
+
+  const error =
+    new Error(message);
+
+  error.status = status;
+
+  return error;
+
+}
+
+
+function getRouteErrorStatus(
+  error
+) {
+
+  if (
+    !error ||
+    typeof error !== "object"
+  ) {
+
+    return 500;
+
+  }
+
+
+  const status =
+    Number(error.status);
+
+
+  if (
+    status >= 400 &&
+    status < 600
+  ) {
+
+    return status;
+
+  }
+
+
+  return 500;
+
+}
+
+
+function getRouteErrorMessage(
+  error,
+  fallback
+) {
+
+  if (
+    error &&
+    typeof error === "object" &&
+    error.message
+  ) {
+
+    return error.message;
+
+  }
+
+
+  return String(
+    error || fallback
+  );
+
+}
 
 
 /* ============================================================
