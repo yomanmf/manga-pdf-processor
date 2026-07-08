@@ -1,0 +1,25 @@
+.DS_Store
+node_modules/
+dist/
+build/
+coverage/
+.env
+.env.*
+!.env.example
+
+# Runtime/browser/session data
+data/
+storage-state*.json
+cookies*.json
+*.sqlite
+*.db
+
+# Large generated manga outputs
+*.pdf
+*.cbz
+*.zip
+
+# Local editor and OS files
+.idea/
+.vscode/
+*.log

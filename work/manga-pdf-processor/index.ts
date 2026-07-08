@@ -1,0 +1,6390 @@
+import { Hono } from "hono";
+import { PDFDocument } from "pdf-lib";
+import JSZip from "jszip";
+
+const app = new Hono();
+
+const MAX_PDF_SIZE = 185 * 1024 * 1024;
+
+const htmlContent = `<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  />
+
+  <title>Manga PDF Processor</title>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        Roboto,
+        sans-serif;
+
+      background:
+        linear-gradient(
+          135deg,
+          #667eea 0%,
+          #764ba2 100%
+        );
+
+      min-height: 100vh;
+
+      display: flex;
+      align-items: center;
+      justify-content: center;
+
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+
+      border-radius: 12px;
+
+      box-shadow:
+        0 20px 60px rgba(0, 0, 0, 0.3);
+
+      padding: 40px;
+
+      max-width: 500px;
+      width: 100%;
+    }
+
+    h1 {
+      color: #333;
+      margin-bottom: 10px;
+      font-size: 28px;
+    }
+
+    .subtitle {
+      color: #666;
+      margin-bottom: 30px;
+      font-size: 14px;
+    }
+
+    .upload-area {
+      border: 2px dashed #667eea;
+      border-radius: 8px;
+
+      padding: 40px 20px;
+
+      text-align: center;
+      cursor: pointer;
+
+      transition: all 0.3s ease;
+
+      background: #f8f9ff;
+    }
+
+    .upload-area:hover {
+      border-color: #764ba2;
+      background: #f0f2ff;
+    }
+
+    .upload-area.dragover {
+      border-color: #764ba2;
+      background: #e8ebff;
+    }
+
+    .upload-icon {
+      font-size: 48px;
+      margin-bottom: 15px;
+    }
+
+    .upload-text {
+      color: #333;
+      font-weight: 500;
+      margin-bottom: 5px;
+    }
+
+    .upload-hint {
+      color: #999;
+      font-size: 13px;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    .files-list {
+      margin-top: 20px;
+
+      padding: 15px;
+
+      background: #f0f2ff;
+
+      border-radius: 8px;
+
+      display: none;
+
+      max-height: 250px;
+      overflow-y: auto;
+    }
+
+    .files-list.show {
+      display: block;
+    }
+
+    .file-item {
+      color: #333;
+
+      font-weight: 500;
+
+      word-break: break-all;
+
+      padding: 8px 0;
+
+      border-bottom: 1px solid #e0e0e0;
+
+      font-size: 13px;
+    }
+
+    .file-item:last-child {
+      border-bottom: none;
+    }
+
+    .file-count {
+      color: #666;
+
+      font-size: 12px;
+
+      margin-top: 8px;
+      padding-top: 8px;
+
+      border-top: 1px solid #e0e0e0;
+    }
+
+    .settings-section {
+      margin-top: 20px;
+
+      padding: 15px;
+
+      background: #f8f9ff;
+
+      border-radius: 8px;
+
+      border: 1px solid #e0e0e0;
+    }
+
+    .settings-title {
+      color: #333;
+
+      font-weight: 600;
+
+      font-size: 13px;
+
+      margin-bottom: 12px;
+    }
+
+    .text-input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d0d0d0;
+      border-radius: 8px;
+      font-size: 13px;
+      color: #333;
+      background: white;
+    }
+
+    .text-input + .text-input {
+      margin-top: 10px;
+    }
+
+    .weeb-search {
+      position: relative;
+    }
+
+    .weeb-search-hint {
+      margin: 8px 2px 0;
+      color: #777;
+      font-size: 11px;
+    }
+
+    .weeb-suggestions {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      right: 0;
+      z-index: 20;
+      max-height: 280px;
+      overflow-y: auto;
+      border: 1px solid #d9dcf2;
+      border-radius: 8px;
+      background: white;
+      box-shadow: 0 12px 28px rgba(42, 48, 96, 0.18);
+    }
+
+    .weeb-suggestions.show {
+      display: block;
+    }
+
+    .weeb-suggestion {
+      display: block;
+      width: 100%;
+      padding: 11px 12px;
+      border: 0;
+      border-bottom: 1px solid #eeeeF7;
+      background: white;
+      color: #333;
+      font: inherit;
+      font-size: 13px;
+      line-height: 1.35;
+      text-align: left;
+      cursor: pointer;
+    }
+
+    .weeb-suggestion:last-child {
+      border-bottom: 0;
+    }
+
+    .weeb-suggestion:hover,
+    .weeb-suggestion.active {
+      background: #f0f2ff;
+      color: #4f5fce;
+    }
+
+    .weeb-suggestion-status {
+      padding: 12px;
+      color: #777;
+      font-size: 12px;
+    }
+
+    .weeb-actions {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .chapter-preview {
+      display: none;
+      max-height: 220px;
+      overflow-y: auto;
+      margin-top: 10px;
+      padding: 10px;
+      border-radius: 8px;
+      background: white;
+      color: #444;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+    }
+
+    .chapter-preview.show {
+      display: block;
+    }
+
+    .kindle-status {
+      margin-bottom: 12px;
+      padding: 11px 12px;
+      border: 1px solid #d9dcf2;
+      border-radius: 8px;
+      background: white;
+      color: #555;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .kindle-status.connected {
+      border-color: #b9dfc2;
+      background: #f0fbf3;
+      color: #236b34;
+    }
+
+    .kindle-status.disconnected {
+      border-color: #efd2a8;
+      background: #fff8ec;
+      color: #845312;
+    }
+
+    .kindle-queue {
+      margin-top: 10px;
+      color: #666;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .success-screen .kindle-queue {
+      white-space: pre-wrap;
+    }
+
+    .toggle-option {
+      display: flex;
+
+      align-items: center;
+
+      gap: 10px;
+    }
+
+    .toggle-switch {
+      position: relative;
+
+      width: 44px;
+      height: 24px;
+
+      background: #ccc;
+
+      border-radius: 12px;
+
+      cursor: pointer;
+
+      transition: background 0.3s ease;
+    }
+
+    .toggle-switch.active {
+      background: #667eea;
+    }
+
+    .toggle-switch::after {
+      content: "";
+
+      position: absolute;
+
+      width: 20px;
+      height: 20px;
+
+      background: white;
+
+      border-radius: 50%;
+
+      top: 2px;
+      left: 2px;
+
+      transition: left 0.3s ease;
+    }
+
+    .toggle-switch.active::after {
+      left: 22px;
+    }
+
+    .toggle-label {
+      color: #333;
+
+      font-size: 13px;
+
+      font-weight: 500;
+
+      cursor: pointer;
+
+      flex: 1;
+    }
+
+    .button-group {
+      display: flex;
+
+      gap: 10px;
+
+      margin-top: 20px;
+    }
+
+    button {
+      flex: 1;
+
+      padding: 12px 20px;
+
+      border: none;
+
+      border-radius: 8px;
+
+      font-size: 14px;
+
+      font-weight: 600;
+
+      cursor: pointer;
+
+      transition: all 0.3s ease;
+    }
+
+    .btn-process {
+      background:
+        linear-gradient(
+          135deg,
+          #667eea 0%,
+          #764ba2 100%
+        );
+
+      color: white;
+    }
+
+    .btn-process:hover:not(:disabled) {
+      transform: translateY(-2px);
+
+      box-shadow:
+        0 10px 20px rgba(102, 126, 234, 0.3);
+    }
+
+    .btn-process:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .btn-clear,
+    .btn-new {
+      background: #e0e0e0;
+      color: #333;
+    }
+
+    .btn-clear:hover,
+    .btn-new:hover {
+      background: #d0d0d0;
+    }
+
+    .progress-screen {
+      display: none;
+      text-align: center;
+    }
+
+    .progress-screen.show {
+      display: block;
+    }
+
+    .progress-screen h2 {
+      color: #333;
+
+      margin-bottom: 30px;
+
+      font-size: 24px;
+    }
+
+    .progress-text {
+      color: #666;
+
+      font-size: 14px;
+
+      margin-bottom: 20px;
+
+      word-break: break-word;
+    }
+
+    .spinner {
+      width: 80px;
+      height: 80px;
+
+      margin: 20px auto;
+
+      border: 8px solid #eee;
+
+      border-top-color: #667eea;
+
+      border-radius: 50%;
+
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .success-screen {
+      display: none;
+      text-align: center;
+    }
+
+    .success-screen.show {
+      display: block;
+    }
+
+    .success-icon {
+      font-size: 80px;
+      margin-bottom: 20px;
+    }
+
+    .success-title {
+      color: #333;
+
+      font-size: 28px;
+
+      font-weight: 700;
+
+      margin-bottom: 10px;
+    }
+
+    .success-subtitle {
+      color: #666;
+
+      font-size: 14px;
+
+      margin-bottom: 30px;
+    }
+
+    .success-details {
+      background: #f0f2ff;
+
+      border-radius: 8px;
+
+      padding: 20px;
+
+      margin-bottom: 30px;
+
+      text-align: left;
+    }
+
+    .detail-item {
+      display: flex;
+
+      justify-content: space-between;
+
+      padding: 8px 0;
+
+      border-bottom: 1px solid #e0e0e0;
+    }
+
+    .detail-item:last-child {
+      border-bottom: none;
+    }
+
+    .detail-label {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .detail-value {
+      color: #333;
+
+      font-weight: 600;
+
+      font-size: 13px;
+    }
+
+    .download-status {
+      background: #d4edda;
+
+      color: #155724;
+
+      border: 1px solid #c3e6cb;
+
+      border-radius: 8px;
+
+      padding: 12px;
+
+      margin-bottom: 20px;
+
+      font-size: 13px;
+    }
+
+    .message {
+      margin-top: 20px;
+
+      padding: 12px;
+
+      border-radius: 8px;
+
+      display: none;
+
+      font-size: 14px;
+
+      word-break: break-word;
+    }
+
+    .message.show {
+      display: block;
+    }
+
+    .message.error {
+      background: #f8d7da;
+
+      color: #721c24;
+
+      border: 1px solid #f5c6cb;
+    }
+
+    .main-content {
+      display: block;
+    }
+
+    .main-content.hidden {
+      display: none;
+    }
+
+    @media (min-width: 900px) {
+      body {
+        padding: 16px;
+      }
+
+      .container {
+        max-width: 1080px;
+        padding: 22px;
+      }
+
+      .main-content {
+        display: grid;
+        grid-template-columns:
+          minmax(300px, 0.9fr)
+          minmax(420px, 1.1fr);
+        grid-template-areas:
+          "title title"
+          "subtitle subtitle"
+          "upload weeb"
+          "kindle weeb"
+          "files weeb"
+          "settings actions"
+          "message message";
+        gap: 10px 16px;
+        align-items: start;
+      }
+
+      h1 {
+        grid-area: title;
+        margin-bottom: 0;
+        font-size: 24px;
+        line-height: 1.1;
+      }
+
+      .subtitle {
+        grid-area: subtitle;
+        margin-bottom: 2px;
+        font-size: 13px;
+      }
+
+      .upload-area {
+        grid-area: upload;
+        min-height: 118px;
+        padding: 18px 16px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+
+      .upload-icon {
+        font-size: 34px;
+        margin-bottom: 8px;
+      }
+
+      .upload-text {
+        margin-bottom: 3px;
+      }
+
+      .files-list {
+        grid-area: files;
+        margin-top: 0;
+        max-height: 86px;
+        padding: 10px 12px;
+      }
+
+      .file-item {
+        padding: 5px 0;
+        font-size: 12px;
+      }
+
+      .settings-section {
+        margin-top: 0;
+        padding: 12px;
+      }
+
+      .kindle-section {
+        grid-area: kindle;
+      }
+
+      .weeb-section {
+        grid-area: weeb;
+      }
+
+      .processing-settings-section {
+        grid-area: settings;
+      }
+
+      .settings-title {
+        margin-bottom: 8px;
+      }
+
+      .text-input {
+        padding: 8px 10px;
+      }
+
+      .text-input + .text-input {
+        margin-top: 8px;
+      }
+
+      .weeb-search-hint {
+        margin-top: 6px;
+      }
+
+      .weeb-actions {
+        margin-top: 8px;
+      }
+
+      .weeb-suggestions {
+        max-height: 180px;
+      }
+
+      .chapter-preview {
+        max-height: 96px;
+        margin-top: 8px;
+        padding: 8px;
+        line-height: 1.4;
+      }
+
+      .kindle-status {
+        margin-bottom: 8px;
+        padding: 8px 10px;
+        line-height: 1.35;
+      }
+
+      .kindle-queue {
+        margin-top: 7px;
+        line-height: 1.35;
+      }
+
+      .toggle-option {
+        gap: 8px;
+      }
+
+      .toggle-switch {
+        width: 38px;
+        height: 22px;
+        border-radius: 11px;
+        flex: 0 0 auto;
+      }
+
+      .toggle-switch::after {
+        width: 18px;
+        height: 18px;
+      }
+
+      .toggle-switch.active::after {
+        left: 18px;
+      }
+
+      .toggle-label {
+        font-size: 12px;
+      }
+
+      .main-content > .button-group {
+        grid-area: actions;
+        margin-top: 0;
+        align-self: end;
+      }
+
+      button {
+        padding: 10px 16px;
+      }
+
+      .main-content > .message {
+        grid-area: message;
+        margin-top: 0;
+      }
+
+      .progress-screen,
+      .success-screen {
+        max-width: 540px;
+        margin: 0 auto;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+
+    <div
+      class="main-content"
+      id="mainContent"
+    >
+
+      <h1>Manga PDF Processor</h1>
+
+      <p class="subtitle">
+        Processing manga to PDF
+      </p>
+
+
+      <div
+        class="upload-area"
+        id="uploadArea"
+      >
+
+        <div class="upload-icon">
+          📄
+        </div>
+
+        <div class="upload-text">
+          Upload PDF or CBZ files
+        </div>
+
+        <div class="upload-hint">
+          or drag and drop here
+        </div>
+
+        <input
+          type="file"
+          id="fileInput"
+          accept=".pdf,.cbz"
+          multiple
+        />
+
+      </div>
+
+
+      <div
+        class="files-list"
+        id="filesList"
+      >
+
+        <div id="filesContainer"></div>
+
+        <div
+          class="file-count"
+          id="fileCount"
+        ></div>
+
+      </div>
+
+
+      <div class="settings-section kindle-section">
+
+        <div class="settings-title">
+          Automatic Send to Kindle
+        </div>
+
+        <div
+          class="kindle-status"
+          id="kindleStatus"
+        >
+          Checking Amazon session...
+        </div>
+
+        <div class="toggle-option">
+          <div
+            class="toggle-switch"
+            id="kindleToggle"
+          ></div>
+
+          <label
+            class="toggle-label"
+            for="kindleToggle"
+          >
+            Send each ready PDF to Kindle instead of downloading an archive
+          </label>
+        </div>
+
+        <div class="weeb-actions">
+          <button
+            class="btn-clear"
+            id="kindleConnectBtn"
+            type="button"
+          >
+            Connect Amazon
+          </button>
+
+          <button
+            class="btn-clear"
+            id="kindleRefreshBtn"
+            type="button"
+          >
+            Refresh status
+          </button>
+        </div>
+
+        <div
+          class="kindle-queue"
+          id="kindleQueue"
+        ></div>
+
+      </div>
+
+
+      <div class="settings-section weeb-section">
+
+        <div class="settings-title">
+          Search and download from WeebCentral
+        </div>
+
+        <div class="weeb-search">
+          <input
+            class="text-input"
+            id="weebSearch"
+            type="search"
+            placeholder="Start typing a manga title..."
+            autocomplete="off"
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="false"
+            aria-controls="weebSuggestions"
+          />
+
+          <div
+            class="weeb-suggestions"
+            id="weebSuggestions"
+            role="listbox"
+          ></div>
+        </div>
+
+        <div class="weeb-search-hint">
+          Select a title from the suggestions, or paste its URL below.
+        </div>
+
+        <input
+          class="text-input"
+          id="weebUrl"
+          type="url"
+          placeholder="https://weebcentral.com/series/..."
+        />
+
+        <div class="weeb-actions">
+          <button
+            class="btn-clear"
+            id="weebLoadBtn"
+            type="button"
+          >
+            Load chapters
+          </button>
+        </div>
+
+        <div
+          class="chapter-preview"
+          id="weebChapterPreview"
+        ></div>
+
+        <input
+          class="text-input"
+          id="weebSelection"
+          type="text"
+          placeholder="all, single 5, range 1-10, or 1,5,9"
+          disabled
+        />
+
+        <div class="weeb-actions">
+          <button
+            class="btn-process"
+            id="weebDownloadBtn"
+            type="button"
+            disabled
+          >
+            Download and process
+          </button>
+        </div>
+
+      </div>
+
+
+      <div class="settings-section processing-settings-section">
+
+        <div class="settings-title">
+          Settings
+        </div>
+
+        <div class="toggle-option">
+
+          <div
+            class="toggle-switch active"
+            id="mergeToggle"
+          ></div>
+
+          <label class="toggle-label">
+            Merge vertical pages
+          </label>
+
+        </div>
+
+      </div>
+
+
+      <div class="button-group">
+
+        <button
+          class="btn-process"
+          id="processBtn"
+          disabled
+        >
+          Process
+        </button>
+
+        <button
+          class="btn-clear"
+          id="clearBtn"
+        >
+          Clear
+        </button>
+
+      </div>
+
+
+      <div
+        class="message"
+        id="message"
+      ></div>
+
+    </div>
+
+
+    <div
+      class="progress-screen"
+      id="progressScreen"
+    >
+
+      <h2>Processing...</h2>
+
+      <div
+        class="progress-text"
+        id="progressText"
+      >
+        Loading files...
+      </div>
+
+      <div class="spinner"></div>
+
+    </div>
+
+
+    <div
+      class="success-screen"
+      id="successScreen"
+    >
+
+      <div class="success-icon">
+        ✨
+      </div>
+
+      <div class="success-title">
+        Done!
+      </div>
+
+      <div class="success-subtitle">
+        Manga processed successfully
+      </div>
+
+
+      <div class="success-details">
+
+        <div class="detail-item">
+
+          <span class="detail-label">
+            Files processed:
+          </span>
+
+          <span
+            class="detail-value"
+            id="successFileCount"
+          >
+            -
+          </span>
+
+        </div>
+
+
+        <div class="detail-item">
+
+          <span class="detail-label">
+            Output files:
+          </span>
+
+          <span
+            class="detail-value"
+            id="successOutputCount"
+          >
+            -
+          </span>
+
+        </div>
+
+      </div>
+
+
+      <div
+        class="download-status"
+        id="downloadStatus"
+      >
+        Archive ready
+      </div>
+
+
+      <div
+        class="kindle-queue"
+        id="successKindleQueue"
+      ></div>
+
+
+      <div class="button-group">
+
+        <button
+          class="btn-new"
+          id="newFileBtn"
+        >
+          Process more
+        </button>
+
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
+  <script>
+
+    const uploadArea =
+      document.getElementById("uploadArea");
+
+    const fileInput =
+      document.getElementById("fileInput");
+
+    const filesList =
+      document.getElementById("filesList");
+
+    const filesContainer =
+      document.getElementById("filesContainer");
+
+    const fileCount =
+      document.getElementById("fileCount");
+
+    const processBtn =
+      document.getElementById("processBtn");
+
+    const clearBtn =
+      document.getElementById("clearBtn");
+
+    const message =
+      document.getElementById("message");
+
+    const mainContent =
+      document.getElementById("mainContent");
+
+    const progressScreen =
+      document.getElementById("progressScreen");
+
+    const progressText =
+      document.getElementById("progressText");
+
+    const successScreen =
+      document.getElementById("successScreen");
+
+    const newFileBtn =
+      document.getElementById("newFileBtn");
+
+    const successFileCount =
+      document.getElementById("successFileCount");
+
+    const successOutputCount =
+      document.getElementById("successOutputCount");
+
+    const downloadStatus =
+      document.getElementById("downloadStatus");
+
+    const successKindleQueue =
+      document.getElementById("successKindleQueue");
+
+    const mergeToggle =
+      document.getElementById("mergeToggle");
+
+    const kindleToggle =
+      document.getElementById("kindleToggle");
+
+    const kindleStatus =
+      document.getElementById("kindleStatus");
+
+    const kindleQueue =
+      document.getElementById("kindleQueue");
+
+    const kindleConnectBtn =
+      document.getElementById(
+        "kindleConnectBtn"
+      );
+
+    const kindleRefreshBtn =
+      document.getElementById(
+        "kindleRefreshBtn"
+      );
+
+    const weebSearch =
+      document.getElementById("weebSearch");
+
+    const weebSuggestions =
+      document.getElementById(
+        "weebSuggestions"
+      );
+
+    const weebUrl =
+      document.getElementById("weebUrl");
+
+    const weebLoadBtn =
+      document.getElementById("weebLoadBtn");
+
+    const weebChapterPreview =
+      document.getElementById(
+        "weebChapterPreview"
+      );
+
+    const weebSelection =
+      document.getElementById(
+        "weebSelection"
+      );
+
+    const weebDownloadBtn =
+      document.getElementById(
+        "weebDownloadBtn"
+      );
+
+
+    let shouldMerge = true;
+
+    const kindlePreferenceKey =
+      "mangaPdfProcessor.sendToKindle";
+
+    let shouldSendToKindle = true;
+
+    let kindleConnected = false;
+
+    let latestKindleCounts = {};
+
+    let successKindleSummary = null;
+
+    let selectedFiles = [];
+
+    let weebMangaTitle = "";
+
+    let weebChapters = [];
+
+    let weebLoadedSeriesUrl = "";
+
+    let weebSearchResults = [];
+
+    let weebSearchTimer = null;
+
+    let weebSearchController = null;
+
+    let weebSearchActiveIndex = -1;
+
+    let weebSelectedSearchTitle = "";
+
+
+    mergeToggle.addEventListener(
+      "click",
+      function () {
+
+        shouldMerge = !shouldMerge;
+
+        mergeToggle.classList.toggle(
+          "active",
+          shouldMerge
+        );
+
+      }
+    );
+
+
+    function getKindlePreference() {
+
+      try {
+        return localStorage.getItem(
+          kindlePreferenceKey
+        );
+      } catch (_) {
+        return null;
+      }
+
+    }
+
+
+    function setKindlePreference(
+      value
+    ) {
+
+      try {
+        localStorage.setItem(
+          kindlePreferenceKey,
+          value
+        );
+      } catch (_) {}
+
+    }
+
+
+    function setKindleSendingEnabled(
+      enabled
+    ) {
+
+      shouldSendToKindle = Boolean(
+        enabled
+      );
+
+      kindleToggle.classList.toggle(
+        "active",
+        shouldSendToKindle
+      );
+
+      kindleToggle.setAttribute(
+        "aria-pressed",
+        String(shouldSendToKindle)
+      );
+
+    }
+
+
+    setKindleSendingEnabled(true);
+
+
+    kindleToggle.addEventListener(
+      "click",
+      function () {
+
+        const nextValue =
+          !shouldSendToKindle;
+
+        setKindleSendingEnabled(
+          nextValue
+        );
+
+        setKindlePreference(
+          nextValue ? "on" : "off"
+        );
+
+        if (
+          nextValue &&
+          !kindleConnected
+        ) {
+          showMessage(
+            "Connect Amazon first, then press Refresh status.",
+            "error"
+          );
+        }
+
+      }
+    );
+
+
+    kindleConnectBtn.addEventListener(
+      "click",
+      function () {
+        window.open(
+          "/kindle/connect",
+          "_blank",
+          "noopener"
+        );
+      }
+    );
+
+
+    kindleRefreshBtn.addEventListener(
+      "click",
+      refreshKindleStatus
+    );
+
+
+    function formatKindleQueueText(
+      counts
+    ) {
+
+      return (
+        "Queued: " +
+        Number(counts.queued || 0) +
+        " · Uploading: " +
+        Number(counts.processing || 0) +
+        " · Waiting for login: " +
+        Number(counts.waitingAuth || 0) +
+        " · Sent: " +
+        Number(counts.sent || 0) +
+        " · Failed: " +
+        Number(counts.failed || 0)
+      );
+
+    }
+
+
+    function setKindleQueueSummary(
+      counts
+    ) {
+
+      const text =
+        formatKindleQueueText(
+          counts || {}
+        );
+
+      latestKindleCounts =
+        counts || {};
+
+      kindleQueue.textContent = text;
+
+      renderSuccessKindleSummary();
+
+    }
+
+
+    function formatPdfCount(
+      count
+    ) {
+
+      return (
+        count +
+        " PDF " +
+        (count === 1 ? "file" : "files")
+      );
+
+    }
+
+
+    function renderSuccessKindleSummary() {
+
+      if (!successKindleSummary) {
+        return;
+      }
+
+      if (successKindleSummary.sentToKindle) {
+        successKindleQueue.textContent =
+          "This run: queued " +
+          formatPdfCount(
+            successKindleSummary.queuedThisRun
+          ) +
+          " to Kindle\\nQueue total: " +
+          formatKindleQueueText(
+            latestKindleCounts
+          );
+      } else {
+        successKindleQueue.textContent =
+          "This run: Kindle auto-send was off\\nQueue total: " +
+          formatKindleQueueText(
+            latestKindleCounts
+          );
+      }
+
+    }
+
+
+    function setSuccessKindleSummary(
+      sentToKindle,
+      queuedThisRun
+    ) {
+
+      successKindleSummary = {
+        sentToKindle,
+        queuedThisRun
+      };
+
+      renderSuccessKindleSummary();
+
+    }
+
+
+    async function refreshKindleStatus() {
+
+      kindleRefreshBtn.disabled = true;
+
+
+      try {
+
+        const response = await fetch(
+          "/kindle/status"
+        );
+
+        const data = await response.json();
+
+
+        if (!response.ok) {
+          throw new Error(
+            data.error ||
+            "Kindle status unavailable"
+          );
+        }
+
+        kindleConnected =
+          Boolean(data.connected);
+
+        const storedPreference =
+          getKindlePreference();
+
+        if (kindleConnected) {
+          setKindleSendingEnabled(
+            storedPreference === "off"
+              ? false
+              : true
+          );
+        } else {
+          setKindleSendingEnabled(
+            storedPreference === "off"
+              ? false
+              : true
+          );
+        }
+
+
+        kindleStatus.className =
+          "kindle-status " +
+          (data.connected
+            ? "connected"
+            : "disconnected");
+
+        kindleStatus.textContent =
+          data.connected
+            ? "Amazon session connected · Kindle auto-send " +
+              (shouldSendToKindle ? "ON" : "OFF")
+            : "Amazon session needs connection · Kindle auto-send " +
+              (shouldSendToKindle
+                ? "will start after connection"
+                : "OFF");
+
+
+        const counts = data.counts || {};
+
+        setKindleQueueSummary(counts);
+
+        return data;
+
+      } catch (error) {
+
+        kindleConnected = false;
+
+        setKindleSendingEnabled(
+          getKindlePreference() === "off"
+            ? false
+            : true
+        );
+
+        kindleStatus.className =
+          "kindle-status disconnected";
+
+        kindleStatus.textContent =
+          "Kindle uploader unavailable: " +
+          error.message;
+
+        return null;
+
+      } finally {
+
+        kindleRefreshBtn.disabled = false;
+
+      }
+
+    }
+
+
+    refreshKindleStatus();
+
+    setInterval(
+      refreshKindleStatus,
+      15000
+    );
+
+
+    async function getKindleSendingForRun() {
+
+      if (!shouldSendToKindle) {
+        return false;
+      }
+
+      const data =
+        await refreshKindleStatus();
+
+      if (
+        !data ||
+        !data.connected
+      ) {
+        throw new Error(
+          "Amazon session is not connected. Click Connect Amazon, finish login, then Refresh status."
+        );
+      }
+
+      return true;
+
+    }
+
+
+    function hideWeebSuggestions() {
+
+      weebSuggestions.classList.remove(
+        "show"
+      );
+
+      weebSearch.setAttribute(
+        "aria-expanded",
+        "false"
+      );
+
+      weebSearch.removeAttribute(
+        "aria-activedescendant"
+      );
+
+      weebSearchActiveIndex = -1;
+
+    }
+
+
+    function clearLoadedWeebSeries() {
+
+      weebChapters = [];
+      weebLoadedSeriesUrl = "";
+
+      weebChapterPreview.textContent = "";
+      weebChapterPreview.classList.remove(
+        "show"
+      );
+
+    }
+
+
+    function updateWeebControls() {
+
+      const hasUrl =
+        Boolean(weebUrl.value.trim());
+
+      weebSelection.disabled = !hasUrl;
+      weebDownloadBtn.disabled = !hasUrl;
+
+      if (
+        hasUrl &&
+        !weebSelection.value.trim()
+      ) {
+        weebSelection.value = "all";
+      }
+
+    }
+
+
+    function setWeebSearchActiveIndex(
+      index
+    ) {
+
+      const options =
+        weebSuggestions.querySelectorAll(
+          ".weeb-suggestion"
+        );
+
+
+      if (options.length === 0) {
+        return;
+      }
+
+
+      weebSearchActiveIndex =
+        Math.max(
+          0,
+          Math.min(
+            index,
+            options.length - 1
+          )
+        );
+
+
+      options.forEach(
+        function (option, optionIndex) {
+          option.classList.toggle(
+            "active",
+            optionIndex ===
+              weebSearchActiveIndex
+          );
+        }
+      );
+
+
+      const activeOption =
+        options[weebSearchActiveIndex];
+
+
+      weebSearch.setAttribute(
+        "aria-activedescendant",
+        activeOption.id
+      );
+
+      activeOption.scrollIntoView({
+        block: "nearest"
+      });
+
+    }
+
+
+    async function selectWeebSearchResult(
+      index
+    ) {
+
+      const result =
+        weebSearchResults[index];
+
+
+      if (!result) {
+        return;
+      }
+
+
+      weebSearch.value = result.title;
+      weebUrl.value = result.url;
+      weebSelectedSearchTitle =
+        result.title;
+
+      weebMangaTitle = result.title;
+      clearLoadedWeebSeries();
+      updateWeebControls();
+      hideWeebSuggestions();
+
+      await loadWeebSeries();
+
+    }
+
+
+    function renderWeebSuggestions(
+      results
+    ) {
+
+      weebSuggestions.textContent = "";
+      weebSearchResults = results;
+      weebSearchActiveIndex = -1;
+
+
+      if (results.length === 0) {
+
+        const empty =
+          document.createElement("div");
+
+        empty.className =
+          "weeb-suggestion-status";
+
+        empty.textContent =
+          "No matching titles found";
+
+        weebSuggestions.appendChild(empty);
+
+      } else {
+
+        results.forEach(
+          function (result, index) {
+
+            const option =
+              document.createElement(
+                "button"
+              );
+
+            option.type = "button";
+            option.className =
+              "weeb-suggestion";
+            option.id =
+              "weeb-suggestion-" + index;
+            option.setAttribute(
+              "role",
+              "option"
+            );
+            option.textContent =
+              result.title;
+
+            option.addEventListener(
+              "click",
+              function () {
+                selectWeebSearchResult(
+                  index
+                );
+              }
+            );
+
+            weebSuggestions.appendChild(
+              option
+            );
+
+          }
+        );
+
+      }
+
+
+      weebSuggestions.classList.add(
+        "show"
+      );
+
+      weebSearch.setAttribute(
+        "aria-expanded",
+        "true"
+      );
+
+    }
+
+
+    async function searchWeebCentralTitles(
+      query
+    ) {
+
+      if (weebSearchController) {
+        weebSearchController.abort();
+      }
+
+
+      weebSearchController =
+        new AbortController();
+
+      weebSuggestions.innerHTML =
+        '<div class="weeb-suggestion-status">Searching...</div>';
+
+      weebSuggestions.classList.add(
+        "show"
+      );
+
+      weebSearch.setAttribute(
+        "aria-expanded",
+        "true"
+      );
+
+
+      try {
+
+        const response = await fetch(
+          "/weebcentral/search?q=" +
+            encodeURIComponent(query),
+          {
+            signal:
+              weebSearchController.signal
+          }
+        );
+
+        const data = await response.json();
+
+
+        if (!response.ok) {
+          throw new Error(
+            data.error ||
+            "Cannot search titles"
+          );
+        }
+
+
+        if (
+          weebSearch.value.trim() !== query
+        ) {
+          return;
+        }
+
+
+        renderWeebSuggestions(
+          Array.isArray(data.results)
+            ? data.results
+            : []
+        );
+
+      } catch (error) {
+
+        if (error.name === "AbortError") {
+          return;
+        }
+
+
+        weebSuggestions.innerHTML =
+          '<div class="weeb-suggestion-status">Search is temporarily unavailable</div>';
+
+      }
+
+    }
+
+
+    weebSearch.addEventListener(
+      "input",
+      function () {
+
+        clearTimeout(weebSearchTimer);
+
+        const query =
+          weebSearch.value.trim();
+
+
+        if (
+          query !== weebSelectedSearchTitle
+        ) {
+          weebUrl.value = "";
+          weebSelectedSearchTitle = "";
+          weebMangaTitle = "";
+          clearLoadedWeebSeries();
+          updateWeebControls();
+        }
+
+
+        if (query.length < 2) {
+
+          if (weebSearchController) {
+            weebSearchController.abort();
+          }
+
+          hideWeebSuggestions();
+          return;
+
+        }
+
+
+        weebSearchTimer = setTimeout(
+          function () {
+            searchWeebCentralTitles(
+              query
+            );
+          },
+          350
+        );
+
+      }
+    );
+
+
+    weebSearch.addEventListener(
+      "keydown",
+      function (event) {
+
+        if (
+          !weebSuggestions.classList.contains(
+            "show"
+          )
+        ) {
+          return;
+        }
+
+
+        if (event.key === "ArrowDown") {
+
+          event.preventDefault();
+
+          setWeebSearchActiveIndex(
+            weebSearchActiveIndex + 1
+          );
+
+        } else if (event.key === "ArrowUp") {
+
+          event.preventDefault();
+
+          setWeebSearchActiveIndex(
+            weebSearchActiveIndex <= 0
+              ? weebSearchResults.length - 1
+              : weebSearchActiveIndex - 1
+          );
+
+        } else if (
+          event.key === "Enter" &&
+          weebSearchActiveIndex >= 0
+        ) {
+
+          event.preventDefault();
+
+          selectWeebSearchResult(
+            weebSearchActiveIndex
+          );
+
+        } else if (event.key === "Escape") {
+
+          hideWeebSuggestions();
+
+        }
+
+      }
+    );
+
+
+    document.addEventListener(
+      "click",
+      function (event) {
+
+        if (
+          !weebSearch.parentElement.contains(
+            event.target
+          )
+        ) {
+          hideWeebSuggestions();
+        }
+
+      }
+    );
+
+
+    weebUrl.addEventListener(
+      "input",
+      function () {
+        clearLoadedWeebSeries();
+        updateWeebControls();
+      }
+    );
+
+
+    updateWeebControls();
+
+
+    async function loadWeebSeries(
+      options = {}
+    ) {
+
+        const seriesUrl =
+          weebUrl.value.trim();
+
+        const selectionBeforeLoad =
+          weebSelection.value.trim();
+
+        const shouldThrow =
+          Boolean(options.throwOnError);
+
+
+        if (!seriesUrl) {
+          const error =
+            new Error(
+              "Enter a WeebCentral series URL"
+            );
+
+          if (shouldThrow) {
+            throw error;
+          }
+
+          showMessage(
+            error.message,
+            "error"
+          );
+          return false;
+        }
+
+
+        weebLoadBtn.disabled = true;
+        weebDownloadBtn.disabled = true;
+        weebLoadBtn.textContent =
+          "Loading...";
+
+
+        try {
+
+          const response =
+            await fetch(
+              "/weebcentral/series?url=" +
+              encodeURIComponent(seriesUrl)
+            );
+
+
+          const data =
+            await response.json();
+
+
+          if (!response.ok) {
+            throw new Error(
+              data.error ||
+              "Cannot load chapters"
+            );
+          }
+
+
+          weebMangaTitle = data.title;
+          weebChapters =
+            Array.isArray(data.chapters)
+              ? data.chapters
+              : [];
+          weebLoadedSeriesUrl = seriesUrl;
+
+
+          weebChapterPreview.textContent =
+            weebMangaTitle +
+            "\\n\\n" +
+            weebChapters.map(
+              function (chapter) {
+                return (
+                  String(chapter.index)
+                    .padStart(4, " ") +
+                  "  " +
+                  chapter.title +
+                  (chapter.date
+                    ? "  " + chapter.date
+                    : "")
+                );
+              }
+            ).join("\\n");
+
+
+          weebChapterPreview.classList.add(
+            "show"
+          );
+
+          weebSelection.disabled = false;
+          weebSelection.value =
+            selectionBeforeLoad || "all";
+          weebDownloadBtn.disabled = false;
+
+
+          message.classList.remove("show");
+
+          return true;
+
+        } catch (error) {
+
+          if (shouldThrow) {
+            throw error;
+          }
+
+          showMessage(
+            "WeebCentral: " +
+              error.message,
+            "error"
+          );
+
+          return false;
+
+        } finally {
+
+          weebLoadBtn.disabled = false;
+          weebLoadBtn.textContent =
+            "Load chapters";
+          updateWeebControls();
+
+        }
+
+      }
+
+
+    weebLoadBtn.addEventListener(
+      "click",
+      loadWeebSeries
+    );
+
+
+    weebDownloadBtn.addEventListener(
+      "click",
+      async function () {
+
+        let selectedChapters;
+
+        weebDownloadBtn.disabled = true;
+
+
+        try {
+
+          const seriesUrl =
+            weebUrl.value.trim();
+
+          if (
+            !weebChapters.length ||
+            weebLoadedSeriesUrl !== seriesUrl
+          ) {
+            await loadWeebSeries({
+              throwOnError: true
+            });
+          }
+
+          selectedChapters =
+            parseChapterSelection(
+              weebSelection.value,
+              weebChapters
+            );
+        } catch (error) {
+          showMessage(
+            "WeebCentral: " +
+              error.message,
+            "error"
+          );
+          updateWeebControls();
+          return;
+        }
+
+
+        let sendToKindleForRun;
+
+
+        try {
+          sendToKindleForRun =
+            await getKindleSendingForRun();
+        } catch (error) {
+          showMessage(
+            error.message,
+            "error"
+          );
+          updateWeebControls();
+          return;
+        }
+
+
+        mainContent.classList.add("hidden");
+        progressScreen.classList.add("show");
+
+
+        try {
+
+          const finalZip =
+            sendToKindleForRun
+              ? null
+              : new JSZip();
+
+          const mergeCollector =
+            await createPdfMergeCollector(
+              finalZip,
+              sendToKindleForRun,
+              shouldMerge
+            );
+
+
+          for (
+            let i = 0;
+            i < selectedChapters.length;
+            i++
+          ) {
+
+            const chapter =
+              selectedChapters[i];
+
+
+            progressText.textContent =
+              "Downloading " +
+              (i + 1) +
+              "/" +
+              selectedChapters.length +
+              ": " +
+              chapter.title;
+
+
+            const response =
+              await fetch(
+                "/weebcentral/chapter",
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type":
+                      "application/json"
+                  },
+                  body: JSON.stringify({
+                    chapterId: chapter.id,
+                    chapterTitle:
+                      chapter.title,
+                    mangaTitle:
+                      weebMangaTitle,
+                    shouldMerge
+                  })
+                }
+              );
+
+
+            if (!response.ok) {
+
+              let errorText =
+                "Chapter download failed";
+
+              try {
+                const errorData =
+                  await response.json();
+                errorText =
+                  errorData.error ||
+                  errorText;
+              } catch (_) {}
+
+              throw new Error(
+                chapter.title +
+                ": " +
+                errorText
+              );
+
+            }
+
+
+            const chapterZip =
+              await JSZip.loadAsync(
+                await response.arrayBuffer()
+              );
+
+
+            for (
+              const [name, entry]
+              of Object.entries(
+                chapterZip.files
+              )
+            ) {
+
+              if (
+                entry.dir ||
+                !name
+                  .toLowerCase()
+                  .endsWith(".pdf")
+              ) {
+                continue;
+              }
+
+
+              await mergeCollector.add({
+                bytes:
+                  await entry.async(
+                    "uint8array"
+                  ),
+                sourceName:
+                  weebMangaTitle +
+                  " " +
+                  chapter.title +
+                  ".pdf"
+              });
+
+            }
+
+          }
+
+
+          progressText.textContent =
+            "Merging PDFs up to 200 MB...";
+
+
+          const outputCount =
+            await mergeCollector.finish();
+
+
+          const firstChapter =
+            selectedChapters[0];
+
+          const lastChapter =
+            selectedChapters[
+              selectedChapters.length - 1
+            ];
+
+
+          if (!sendToKindleForRun) {
+
+            const blob =
+              await finalZip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: {
+                  level: 6
+                }
+              });
+
+            triggerBlobDownload(
+              blob,
+              sanitizeClientFileName(
+                weebMangaTitle +
+                " " +
+                firstChapter.title +
+                (firstChapter.id ===
+                  lastChapter.id
+                  ? ""
+                  : " - " +
+                    lastChapter.title)
+              ) +
+              "_processed.zip"
+            );
+
+          }
+
+
+          progressScreen.classList.remove(
+            "show"
+          );
+          successScreen.classList.add("show");
+          successFileCount.textContent =
+            selectedChapters.length;
+          successOutputCount.textContent =
+            outputCount;
+          downloadStatus.textContent =
+            sendToKindleForRun
+              ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
+              : "Archive downloaded. Kindle auto-send is off.";
+
+          setSuccessKindleSummary(
+            sendToKindleForRun,
+            outputCount
+          );
+
+        } catch (error) {
+
+          progressScreen.classList.remove(
+            "show"
+          );
+          mainContent.classList.remove(
+            "hidden"
+          );
+          showMessage(
+            "Error: " + error.message,
+            "error"
+          );
+
+        } finally {
+
+          weebDownloadBtn.disabled = false;
+
+        }
+
+      }
+    );
+
+
+    uploadArea.addEventListener(
+      "click",
+      function () {
+
+        fileInput.click();
+
+      }
+    );
+
+
+    uploadArea.addEventListener(
+      "dragover",
+      function (event) {
+
+        event.preventDefault();
+
+        uploadArea.classList.add(
+          "dragover"
+        );
+
+      }
+    );
+
+
+    uploadArea.addEventListener(
+      "dragleave",
+      function () {
+
+        uploadArea.classList.remove(
+          "dragover"
+        );
+
+      }
+    );
+
+
+    uploadArea.addEventListener(
+      "drop",
+      function (event) {
+
+        event.preventDefault();
+
+        uploadArea.classList.remove(
+          "dragover"
+        );
+
+        handleFiles(
+          event.dataTransfer.files
+        );
+
+      }
+    );
+
+
+    fileInput.addEventListener(
+      "change",
+      function () {
+
+        handleFiles(
+          fileInput.files
+        );
+
+      }
+    );
+
+
+    function isSupportedFile(file) {
+
+      const name =
+        file.name.toLowerCase();
+
+      return (
+        name.endsWith(".pdf") ||
+        name.endsWith(".cbz")
+      );
+
+    }
+
+
+    function handleFiles(fileList) {
+
+      selectedFiles =
+        Array
+          .from(fileList)
+          .filter(isSupportedFile);
+
+
+      if (selectedFiles.length === 0) {
+
+        showMessage(
+          "Please select PDF or CBZ files",
+          "error"
+        );
+
+        filesList.classList.remove(
+          "show"
+        );
+
+        processBtn.disabled = true;
+
+        return;
+
+      }
+
+
+      filesContainer.innerHTML = "";
+
+
+      selectedFiles.forEach(
+        function (file) {
+
+          const item =
+            document.createElement("div");
+
+          item.className =
+            "file-item";
+
+          item.textContent =
+            file.name;
+
+          filesContainer.appendChild(
+            item
+          );
+
+        }
+      );
+
+
+      fileCount.textContent =
+        "Files: " +
+        selectedFiles.length;
+
+
+      filesList.classList.add(
+        "show"
+      );
+
+
+      processBtn.disabled = false;
+
+      message.classList.remove(
+        "show"
+      );
+
+    }
+
+
+    clearBtn.addEventListener(
+      "click",
+      resetMainScreen
+    );
+
+
+    processBtn.addEventListener(
+      "click",
+      async function () {
+
+        if (
+          selectedFiles.length === 0
+        ) {
+          return;
+        }
+
+
+        let sendToKindleForRun;
+
+
+        try {
+          sendToKindleForRun =
+            await getKindleSendingForRun();
+        } catch (error) {
+          showMessage(
+            error.message,
+            "error"
+          );
+          return;
+        }
+
+
+        processBtn.disabled = true;
+
+        mainContent.classList.add(
+          "hidden"
+        );
+
+        progressScreen.classList.add(
+          "show"
+        );
+
+
+        try {
+          const finalZip =
+            sendToKindleForRun
+              ? null
+              : new JSZip();
+
+          const mergeCollector =
+            await createPdfMergeCollector(
+              finalZip,
+              sendToKindleForRun,
+              shouldMerge
+            );
+
+
+          for (
+            let i = 0;
+            i < selectedFiles.length;
+            i++
+          ) {
+
+            const file =
+              selectedFiles[i];
+
+
+            progressText.textContent =
+              "File " +
+              (i + 1) +
+              "/" +
+              selectedFiles.length +
+              ": " +
+              file.name;
+
+
+            const formData =
+              new FormData();
+
+
+            formData.append(
+              "file",
+              file
+            );
+
+
+            formData.append(
+              "shouldMerge",
+              String(shouldMerge)
+            );
+
+
+            const response =
+              await fetch(
+                "/process",
+                {
+                  method: "POST",
+                  body: formData
+                }
+              );
+
+
+            if (!response.ok) {
+
+              let errorText =
+                "Processing error";
+
+
+              try {
+
+                const errorData =
+                  await response.json();
+
+                errorText =
+                  errorData.error ||
+                  errorText;
+
+              } catch (_) {}
+
+
+              throw new Error(
+                file.name +
+                ": " +
+                errorText
+              );
+
+            }
+
+
+            const fileZip =
+              await JSZip.loadAsync(
+                await response.arrayBuffer()
+              );
+
+
+            for (
+              const [name, entry]
+              of Object.entries(
+                fileZip.files
+              )
+            ) {
+
+              if (entry.dir) {
+                continue;
+              }
+
+
+              if (
+                !name
+                  .toLowerCase()
+                  .endsWith(".pdf")
+              ) {
+                continue;
+              }
+
+
+              await mergeCollector.add(
+                {
+                  bytes:
+                    await entry.async(
+                      "uint8array"
+                    ),
+                  sourceName:
+                    file.name
+                }
+              );
+
+            }
+
+          }
+
+
+          progressText.textContent =
+            "Merging PDFs up to 200 MB...";
+
+
+          const outputCount =
+            await mergeCollector.finish();
+
+
+          if (!sendToKindleForRun) {
+
+            progressText.textContent =
+              "Creating archive...";
+
+            const blob =
+              await finalZip.generateAsync({
+                type: "blob",
+                compression: "DEFLATE",
+                compressionOptions: {
+                  level: 6
+                }
+              });
+
+            triggerBlobDownload(
+              blob,
+              buildArchiveBaseName(
+                selectedFiles
+              ) +
+              "_processed.zip"
+            );
+
+          }
+
+
+          progressScreen.classList.remove(
+            "show"
+          );
+
+
+          successScreen.classList.add(
+            "show"
+          );
+
+
+          successFileCount.textContent =
+            selectedFiles.length;
+
+
+          successOutputCount.textContent =
+            outputCount;
+
+
+          downloadStatus.textContent =
+            sendToKindleForRun
+              ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
+              : "Archive downloaded. Kindle auto-send is off.";
+
+          setSuccessKindleSummary(
+            sendToKindleForRun,
+            outputCount
+          );
+
+        } catch (error) {
+
+          progressScreen.classList.remove(
+            "show"
+          );
+
+
+          mainContent.classList.remove(
+            "hidden"
+          );
+
+
+          showMessage(
+            "Error: " +
+            error.message,
+            "error"
+          );
+
+
+          processBtn.disabled = false;
+
+        }
+
+      }
+    );
+
+
+    newFileBtn.addEventListener(
+      "click",
+      function () {
+
+        resetMainScreen();
+
+        successScreen.classList.remove(
+          "show"
+        );
+
+        progressScreen.classList.remove(
+          "show"
+        );
+
+        mainContent.classList.remove(
+          "hidden"
+        );
+
+      }
+    );
+
+
+    function resetMainScreen() {
+
+      fileInput.value = "";
+
+      selectedFiles = [];
+
+      successKindleSummary = null;
+      successKindleQueue.textContent = "";
+
+      filesList.classList.remove(
+        "show"
+      );
+
+      processBtn.disabled = true;
+
+      message.classList.remove(
+        "show"
+      );
+
+    }
+
+
+    function parseChapterSelection(
+      value,
+      chapters
+    ) {
+
+      const normalized =
+        String(value || "")
+          .trim()
+          .toLowerCase();
+
+
+      if (!normalized) {
+        throw new Error(
+          "Enter a chapter selection"
+        );
+      }
+
+
+      if (normalized === "all") {
+        return chapters.slice();
+      }
+
+
+      let expression = normalized
+        .replace(/^single\\s+/, "")
+        .replace(/^range\\s+/, "");
+
+
+      let indices = [];
+
+
+      if (expression.includes(",")) {
+
+        indices = expression
+          .split(",")
+          .map(function (item) {
+            return Number(item.trim());
+          });
+
+      } else if (
+        /^\\d+\\s*-\\s*\\d+$/.test(
+          expression
+        )
+      ) {
+
+        const limits = expression
+          .split("-")
+          .map(function (item) {
+            return Number(item.trim());
+          });
+
+
+        const start = limits[0];
+        const end = limits[1];
+
+
+        if (start > end) {
+          throw new Error(
+            "The range start must not exceed the end"
+          );
+        }
+
+
+        for (let i = start; i <= end; i++) {
+          indices.push(i);
+        }
+
+      } else {
+
+        indices = [Number(expression)];
+
+      }
+
+
+      const uniqueIndices =
+        Array.from(new Set(indices));
+
+
+      if (
+        uniqueIndices.length === 0 ||
+        uniqueIndices.some(
+          function (index) {
+            return (
+              !Number.isInteger(index) ||
+              index < 1 ||
+              index > chapters.length
+            );
+          }
+        )
+      ) {
+        throw new Error(
+          "Chapter numbers must be between 1 and " +
+          chapters.length
+        );
+      }
+
+
+      return uniqueIndices.map(
+        function (index) {
+          return chapters[index - 1];
+        }
+      );
+
+    }
+
+
+    function triggerBlobDownload(
+      blob,
+      fileName
+    ) {
+
+      const url =
+        window.URL.createObjectURL(blob);
+
+      const link =
+        document.createElement("a");
+
+      link.href = url;
+      link.download = fileName;
+
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+
+      setTimeout(
+        function () {
+          window.URL.revokeObjectURL(url);
+        },
+        1000
+      );
+
+    }
+
+
+    async function createPdfMergeCollector(
+      zip,
+      sendToKindleForRun,
+      combineAcrossSources
+    ) {
+
+      const maxSize =
+        185 * 1024 * 1024;
+
+      let currentPdf =
+        await PDFLib.PDFDocument.create();
+
+      let currentBytes = null;
+      let currentHasPages = false;
+      let currentSources = [];
+      let outputCount = 0;
+      let pendingSinglePage = null;
+
+
+      function rememberSourceName(
+        sourceName
+      ) {
+
+        if (
+          !currentSources.includes(
+            sourceName
+          )
+        ) {
+          currentSources.push(
+            sourceName
+          );
+        }
+
+      }
+
+
+      function assertClientPdfPageSize(
+        width,
+        height,
+        label
+      ) {
+
+        if (
+          !Number.isFinite(width) ||
+          !Number.isFinite(height) ||
+          width <= 0 ||
+          height <= 0
+        ) {
+          throw new Error(
+            label +
+            ": invalid page size " +
+            width +
+            "x" +
+            height
+          );
+        }
+
+      }
+
+
+      function getPdfPageInfo(
+        sourcePdf,
+        sourcePages,
+        pageIndex,
+        sourceName
+      ) {
+
+        const page =
+          sourcePages[pageIndex];
+
+        const size =
+          page.getSize();
+
+        assertClientPdfPageSize(
+          size.width,
+          size.height,
+          sourceName +
+          " page " +
+          (pageIndex + 1)
+        );
+
+        return {
+          sourcePdf,
+          sourceName,
+          pageIndex,
+          page,
+          width:
+            size.width,
+          height:
+            size.height,
+          isVertical:
+            size.width <= size.height,
+          canBridgeWithoutCurrentPages:
+            false
+        };
+
+      }
+
+
+      async function addCollectorOperationToPdf(
+        targetPdf,
+        operation
+      ) {
+
+        if (
+          operation.type === "single"
+        ) {
+
+          const item =
+            operation.item;
+
+
+          if (
+            combineAcrossSources &&
+            item.isVertical
+          ) {
+
+            const pageWidth =
+              item.width * 2;
+
+            const pageHeight =
+              item.height;
+
+            assertClientPdfPageSize(
+              pageWidth,
+              pageHeight,
+              "Single manga spread"
+            );
+
+            const embeddedPage =
+              await targetPdf.embedPage(
+                item.page
+              );
+
+            const spreadPage =
+              targetPdf.addPage([
+                pageWidth,
+                pageHeight
+              ]);
+
+            spreadPage.drawPage(
+              embeddedPage,
+              {
+                x:
+                  item.width,
+
+                y: 0,
+
+                width:
+                  item.width,
+
+                height:
+                  item.height
+              }
+            );
+
+            return;
+
+          }
+
+
+          const copiedPages =
+            await targetPdf.copyPages(
+              item.sourcePdf,
+              [
+                item.pageIndex
+              ]
+            );
+
+          targetPdf.addPage(
+            copiedPages[0]
+          );
+
+          return;
+
+        }
+
+
+        const first =
+          operation.first;
+
+        const second =
+          operation.second;
+
+        const pageWidth =
+          first.width +
+          second.width;
+
+        const pageHeight =
+          Math.max(
+            first.height,
+            second.height
+          );
+
+        assertClientPdfPageSize(
+          pageWidth,
+          pageHeight,
+          "Merged PDF page"
+        );
+
+        const embeddedFirst =
+          await targetPdf.embedPage(
+            first.page
+          );
+
+        const embeddedSecond =
+          await targetPdf.embedPage(
+            second.page
+          );
+
+        const mergedPage =
+          targetPdf.addPage([
+            pageWidth,
+            pageHeight
+          ]);
+
+        mergedPage.drawPage(
+          embeddedSecond,
+          {
+            x: 0,
+
+            y:
+              (
+                pageHeight -
+                second.height
+              ) / 2,
+
+            width:
+              second.width,
+
+            height:
+              second.height
+          }
+        );
+
+        mergedPage.drawPage(
+          embeddedFirst,
+          {
+            x:
+              second.width,
+
+            y:
+              (
+                pageHeight -
+                first.height
+              ) / 2,
+
+            width:
+              first.width,
+
+            height:
+              first.height
+          }
+        );
+
+      }
+
+
+      function getOperationSources(
+        operation
+      ) {
+
+        if (
+          operation.type === "single"
+        ) {
+          return [
+            operation.item.sourceName
+          ];
+        }
+
+        const names = [
+          operation.first.sourceName
+        ];
+
+        if (
+          !names.includes(
+            operation.second.sourceName
+          )
+        ) {
+          names.push(
+            operation.second.sourceName
+          );
+        }
+
+        return names;
+
+      }
+
+
+      async function operationFitsCurrentPdf(
+        operation
+      ) {
+
+        if (
+          !currentHasPages ||
+          !currentBytes
+        ) {
+          return true;
+        }
+
+        const trialPdf =
+          await PDFLib.PDFDocument.load(
+            currentBytes,
+            {
+              ignoreEncryption: true
+            }
+          );
+
+        await addCollectorOperationToPdf(
+          trialPdf,
+          operation
+        );
+
+        const trialBytes =
+          await trialPdf.save({
+            useObjectStreams: true
+          });
+
+        return trialBytes.length <= maxSize;
+
+      }
+
+
+      async function commitOperation(
+        operation
+      ) {
+
+        await addCollectorOperationToPdf(
+          currentPdf,
+          operation
+        );
+
+        const candidateBytes =
+          await currentPdf.save({
+            useObjectStreams: true
+          });
+
+        const operationSources =
+          getOperationSources(
+            operation
+          );
+
+        if (
+          candidateBytes.length > maxSize &&
+          currentHasPages &&
+          currentBytes
+        ) {
+
+          await emitCurrentPdf();
+
+
+          await addCollectorOperationToPdf(
+            currentPdf,
+            operation
+          );
+
+          currentBytes =
+            await currentPdf.save({
+              useObjectStreams: true
+            });
+
+          currentHasPages = true;
+
+          operationSources.forEach(
+            rememberSourceName
+          );
+
+        } else {
+
+          currentBytes =
+            candidateBytes;
+
+          currentHasPages = true;
+
+          operationSources.forEach(
+            rememberSourceName
+          );
+
+        }
+
+
+        if (
+          currentBytes.length > maxSize
+        ) {
+
+          await emitCurrentPdf();
+
+        }
+
+      }
+
+
+      async function flushPendingSinglePage() {
+
+        if (
+          !pendingSinglePage
+        ) {
+          return;
+        }
+
+        const item =
+          pendingSinglePage;
+
+        pendingSinglePage = null;
+
+        await commitOperation({
+          type: "single",
+          item
+        });
+
+      }
+
+
+      async function emitCurrentPdf() {
+
+        if (
+          !currentHasPages ||
+          !currentBytes
+        ) {
+          return;
+        }
+
+
+        outputCount += 1;
+
+        const fileName =
+          buildMergedPdfName(
+            currentSources,
+            outputCount
+          );
+
+
+        if (sendToKindleForRun) {
+
+          progressText.textContent =
+            "Queueing for Kindle: " +
+            fileName;
+
+          await uploadPdfToKindle(
+            fileName,
+            currentBytes
+          );
+
+        } else {
+
+          zip.file(
+            fileName,
+            currentBytes
+          );
+
+        }
+
+
+        currentPdf =
+          await PDFLib.PDFDocument.create();
+
+        currentBytes = null;
+        currentHasPages = false;
+        currentSources = [];
+
+      }
+
+
+      async function add(part) {
+
+        const partBytes =
+          part.bytes;
+
+        const sourceName =
+          part.sourceName;
+
+        const sourcePdf =
+          await PDFLib.PDFDocument.load(
+            partBytes,
+            {
+              ignoreEncryption: true
+            }
+          );
+
+
+        const sourcePages =
+          sourcePdf.getPages();
+
+
+        if (
+          sourcePages.length === 0
+        ) {
+          return;
+        }
+
+
+        let startIndex = 0;
+        let committedSourceOperations = 0;
+
+
+        if (
+          pendingSinglePage
+        ) {
+
+          const firstPage =
+            getPdfPageInfo(
+              sourcePdf,
+              sourcePages,
+              0,
+              sourceName
+            );
+
+          const canBridgeInCurrentFile =
+            currentHasPages ||
+            pendingSinglePage
+              .canBridgeWithoutCurrentPages;
+
+          const pairOperation = {
+            type: "pair",
+            first:
+              pendingSinglePage,
+            second:
+              firstPage
+          };
+
+          if (
+            combineAcrossSources &&
+            pendingSinglePage.sourceName !==
+              sourceName &&
+            firstPage.isVertical &&
+            canBridgeInCurrentFile &&
+            await operationFitsCurrentPdf(
+              pairOperation
+            )
+          ) {
+
+            pendingSinglePage = null;
+
+            await commitOperation(
+              pairOperation
+            );
+
+            startIndex = 1;
+            committedSourceOperations += 1;
+
+          } else {
+
+            await flushPendingSinglePage();
+
+          }
+
+        }
+
+
+        for (
+          let pageIndex = startIndex;
+          pageIndex < sourcePages.length;
+          pageIndex++
+        ) {
+
+          const pageInfo =
+            getPdfPageInfo(
+              sourcePdf,
+              sourcePages,
+              pageIndex,
+              sourceName
+            );
+
+          const isLastPage =
+            pageIndex ===
+            sourcePages.length - 1;
+
+          if (
+            combineAcrossSources &&
+            isLastPage &&
+            pageInfo.isVertical
+          ) {
+
+            pageInfo
+              .canBridgeWithoutCurrentPages =
+              committedSourceOperations === 0;
+
+            pendingSinglePage =
+              pageInfo;
+
+            continue;
+
+          }
+
+
+          await commitOperation({
+            type: "single",
+            item: pageInfo
+          });
+
+          committedSourceOperations += 1;
+
+        }
+
+      }
+
+
+      async function finish() {
+
+        await flushPendingSinglePage();
+
+
+        await emitCurrentPdf();
+
+
+        if (outputCount === 0) {
+          throw new Error(
+            "No processed PDF files"
+          );
+        }
+
+
+        return outputCount;
+
+      }
+
+
+      return {
+        add,
+        finish
+      };
+
+    }
+
+
+    async function uploadPdfToKindle(
+      fileName,
+      pdfBytes
+    ) {
+
+      const blob = new Blob(
+        [pdfBytes],
+        {
+          type: "application/pdf"
+        }
+      );
+
+
+      const ticketResponse = await fetch(
+        "/kindle/upload-ticket",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json"
+          },
+          body: JSON.stringify({
+            filename: fileName,
+            size: blob.size
+          })
+        }
+      );
+
+      const ticket =
+        await ticketResponse.json();
+
+
+      if (!ticketResponse.ok) {
+        throw new Error(
+          ticket.error ||
+          "Cannot create Kindle upload"
+        );
+      }
+
+
+      const uploadResponse = await fetch(
+        ticket.uploadUrl,
+        {
+          method: "PUT",
+          headers: {
+            "Content-Type":
+              "application/pdf"
+          },
+          body: blob
+        }
+      );
+
+
+      if (!uploadResponse.ok) {
+
+        let errorText =
+          "Cannot queue PDF for Kindle";
+
+        try {
+          const data =
+            await uploadResponse.json();
+          errorText = data.error || errorText;
+        } catch (_) {}
+
+        throw new Error(errorText);
+
+      }
+
+
+      await refreshKindleStatus();
+
+    }
+
+
+    function buildArchiveBaseName(
+      files
+    ) {
+
+      const names =
+        files.map(
+          function (file) {
+            return getClientFileBaseName(
+              file.name
+            );
+          }
+        );
+
+
+      let common =
+        names[0] || "manga";
+
+
+      for (
+        let i = 1;
+        i < names.length;
+        i++
+      ) {
+
+        while (
+          common &&
+          !names[i]
+            .toLowerCase()
+            .startsWith(
+              common.toLowerCase()
+            )
+        ) {
+          common =
+            common.slice(0, -1);
+        }
+
+      }
+
+
+      common = common
+        .replace(
+          /[\\s._-]*\\d[\\d\\s._-]*$/,
+          ""
+        )
+        .replace(
+          /[\\s._-]+$/,
+          ""
+        );
+
+
+      if (common.length >= 3) {
+        return sanitizeClientFileName(
+          common
+        );
+      }
+
+
+      const fallback =
+        names[0] || "manga";
+
+
+      return sanitizeClientFileName(
+        names.length > 1
+          ? fallback +
+            "_and_" +
+            (names.length - 1) +
+            "_more"
+          : fallback
+      );
+
+    }
+
+
+    function buildMergedPdfName(
+      sourceNames,
+      outputIndex
+    ) {
+
+      const labels = [];
+
+
+      sourceNames.forEach(
+        function (sourceName) {
+
+          const label =
+            getClientFileBaseName(
+              sourceName
+            );
+
+
+          if (!labels.includes(label)) {
+            labels.push(label);
+          }
+
+        }
+      );
+
+
+      let sourceLabel =
+        labels.join(" + ");
+
+
+      if (sourceLabel.length > 170) {
+
+        sourceLabel =
+          labels[0] +
+          " -- " +
+          labels[labels.length - 1] +
+          " (" +
+          labels.length +
+          " files)";
+
+      }
+
+
+      return sanitizeClientFileName(
+        sourceLabel || "manga"
+      ) +
+      "__part_" +
+      outputIndex +
+      ".pdf";
+
+    }
+
+
+    function getClientFileBaseName(
+      fileName
+    ) {
+
+      const cleanName =
+        String(fileName)
+          .split("/")
+          .pop() || "manga";
+
+
+      return cleanName.replace(
+        /\\.[^/.]+$/,
+        ""
+      );
+
+    }
+
+
+    function sanitizeClientFileName(
+      name
+    ) {
+
+      return (
+        String(name)
+          .replace(
+            /[<>:"|?*]/g,
+            "_"
+          )
+          .split("/")
+          .join("_")
+          .split(
+            String.fromCharCode(92)
+          )
+          .join("_")
+          .replace(
+            /\\s+/g,
+            " "
+          )
+          .trim()
+          .slice(0, 220) ||
+        "manga"
+      );
+
+    }
+
+
+    function showMessage(
+      text,
+      type
+    ) {
+
+      message.textContent = text;
+
+      message.className =
+        "message show " +
+        type;
+
+    }
+
+  </script>
+
+</body>
+</html>`;
+
+
+function buildLoginPage(errorText = "") {
+
+  const safeError = String(errorText)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Manga PDF Processor — вход</title>
+  <style>
+    *{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:20px;font-family:system-ui,sans-serif;background:linear-gradient(135deg,#667eea,#764ba2)}
+    form{width:min(420px,100%);padding:32px;border-radius:14px;background:white;box-shadow:0 20px 60px rgba(0,0,0,.3)}
+    h1{margin:0 0 8px;color:#333;font-size:24px}p{margin:0 0 22px;color:#666;font-size:14px;line-height:1.5}
+    input,button{width:100%;padding:12px 14px;border-radius:8px;font:inherit}input{border:1px solid #d0d0d0;margin-bottom:12px}button{border:0;background:#667eea;color:white;font-weight:700;cursor:pointer}.error{margin-bottom:12px;color:#8c2530;font-size:13px}
+  </style>
+</head>
+<body>
+  <form method="post" action="/login">
+    <h1>Manga PDF Processor</h1>
+    <p>Введите пароль приложения. Пароль Amazon здесь не используется.</p>
+    ${safeError ? `<div class="error">${safeError}</div>` : ""}
+    <input type="password" name="password" placeholder="Пароль приложения" autocomplete="current-password" required autofocus>
+    <button type="submit">Войти</button>
+  </form>
+</body>
+</html>`;
+
+}
+
+
+app.use("*", async (c, next) => {
+
+  const pathname =
+    new URL(c.req.url).pathname;
+
+  const appPassword =
+    process.env.APP_PASSWORD || "";
+
+  const sessionToken =
+    process.env.APP_SESSION_TOKEN || "";
+
+
+  if (
+    !appPassword ||
+    pathname === "/login" ||
+    pathname === "/health"
+  ) {
+    await next();
+    return;
+  }
+
+
+  const cookie =
+    c.req.header("Cookie") || "";
+
+  const authenticated =
+    readCookie(cookie, "manga_session") ===
+      sessionToken;
+
+
+  if (authenticated) {
+    await next();
+    return;
+  }
+
+
+  if (
+    pathname.startsWith("/process") ||
+    pathname.startsWith("/weebcentral/") ||
+    pathname.startsWith("/kindle/")
+  ) {
+    return c.json(
+      { error: "Authentication required" },
+      401
+    );
+  }
+
+
+  return c.html(
+    buildLoginPage(),
+    401
+  );
+
+});
+
+
+/* ============================================================
+   ROUTES
+   ============================================================ */
+
+
+app.get("/health", (c) => {
+  return c.json({ ok: true });
+});
+
+
+app.get("/login", (c) => {
+  return c.html(buildLoginPage());
+});
+
+
+app.post("/login", async (c) => {
+
+  const formData =
+    await c.req.formData();
+
+  const password = String(
+    formData.get("password") || ""
+  );
+
+  const appPassword =
+    process.env.APP_PASSWORD || "";
+
+  const sessionToken =
+    process.env.APP_SESSION_TOKEN || "";
+
+
+  if (
+    !appPassword ||
+    !sessionToken ||
+    password !== appPassword
+  ) {
+    return c.html(
+      buildLoginPage("Неверный пароль"),
+      401
+    );
+  }
+
+
+  c.header(
+    "Set-Cookie",
+    "manga_session=" +
+      encodeURIComponent(sessionToken) +
+      "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=2592000"
+  );
+
+  return c.redirect("/");
+
+});
+
+
+app.get("/logout", (c) => {
+  c.header(
+    "Set-Cookie",
+    "manga_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+  );
+  return c.redirect("/login");
+});
+
+
+app.get("/", (c) => {
+
+  return c.html(
+    htmlContent
+  );
+
+});
+
+
+app.get(
+  "/kindle/status",
+  async (c) => {
+
+    try {
+      const response =
+        await fetchKindleWorker(
+          "/api/status"
+        );
+
+      const data = await response.json();
+
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+          "Kindle worker unavailable"
+        );
+      }
+
+
+      return c.json(data);
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Kindle worker unavailable"
+        },
+        502
+      );
+    }
+
+  }
+);
+
+
+app.get(
+  "/kindle/connect",
+  async (c) => {
+
+    try {
+      const response =
+        await fetchKindleWorker(
+          "/api/connect-token",
+          { method: "POST" }
+        );
+
+      const data = await response.json();
+
+
+      if (!response.ok || !data.url) {
+        throw new Error(
+          data.error ||
+          "Cannot open Amazon connection"
+        );
+      }
+
+
+      return c.redirect(data.url);
+    } catch (error) {
+      return c.text(
+        "Cannot open Amazon connection: " +
+          (error.message || error),
+        502
+      );
+    }
+
+  }
+);
+
+
+app.post(
+  "/kindle/upload-ticket",
+  async (c) => {
+
+    try {
+      const body = await c.req.json();
+
+      const response =
+        await fetchKindleWorker(
+          "/api/tickets",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type":
+                "application/json"
+            },
+            body: JSON.stringify({
+              filename:
+                sanitizeFileName(
+                  body.filename ||
+                  "document.pdf"
+                ),
+              size: Number(body.size)
+            })
+          }
+        );
+
+      const data = await response.json();
+
+
+      return c.json(
+        data,
+        response.status
+      );
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Cannot create Kindle upload"
+        },
+        502
+      );
+    }
+
+  }
+);
+
+app.get(
+  "/weebcentral/search",
+  async (c) => {
+
+    try {
+
+      const query = String(
+        c.req.query("q") || ""
+      ).trim();
+
+
+      if (query.length < 2) {
+        return c.json({
+          results: []
+        });
+      }
+
+
+      if (query.length > 120) {
+        throw new Error(
+          "Search query is too long"
+        );
+      }
+
+
+      const response = await fetch(
+        "https://weebcentral.com/search/simple?location=main",
+        {
+          method: "POST",
+          headers: {
+            "User-Agent":
+              "Mozilla/5.0 Manga PDF Processor",
+            "Accept": "text/html",
+            "Content-Type":
+              "application/x-www-form-urlencoded;charset=UTF-8",
+            "HX-Request": "true",
+            "Origin":
+              "https://weebcentral.com",
+            "Referer":
+              "https://weebcentral.com/search"
+          },
+          body: new URLSearchParams({
+            text: query
+          }).toString()
+        }
+      );
+
+
+      if (!response.ok) {
+        throw new Error(
+          "WeebCentral returned HTTP " +
+          response.status
+        );
+      }
+
+
+      const searchHtml =
+        await response.text();
+
+      const results = [];
+      const seenSeriesIds = new Set();
+
+      const seriesPattern =
+        /<a\b[^>]*href="(https:\/\/weebcentral\.com\/series\/([0-9A-HJKMNP-TV-Z]{26})[^\"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+
+      let seriesMatch;
+
+
+      while (
+        results.length < 10 &&
+        (
+          seriesMatch =
+            seriesPattern.exec(
+              searchHtml
+            )
+        ) !== null
+      ) {
+
+        const seriesId =
+          seriesMatch[2];
+
+
+        if (seenSeriesIds.has(seriesId)) {
+          continue;
+        }
+
+
+        const itemHtml =
+          seriesMatch[3];
+
+        const titleMatch =
+          itemHtml.match(
+            /alt="([^\"]+?) cover"/i
+          );
+
+        const title = decodeHtmlText(
+          titleMatch
+            ? titleMatch[1]
+            : stripHtmlTags(itemHtml)
+        ).trim();
+
+
+        if (!title) {
+          continue;
+        }
+
+
+        const url = decodeHtmlText(
+          seriesMatch[1]
+        );
+
+        getWeebCentralSeriesId(url);
+
+        seenSeriesIds.add(seriesId);
+
+        results.push({
+          title,
+          url
+        });
+
+      }
+
+
+      return c.json({
+        results
+      });
+
+    } catch (error) {
+
+      console.error(
+        "WeebCentral search error:",
+        error
+      );
+
+
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Cannot search WeebCentral"
+        },
+        502
+      );
+
+    }
+
+  }
+);
+
+
+app.get(
+  "/weebcentral/series",
+  async (c) => {
+
+    try {
+
+      const seriesUrl =
+        c.req.query("url");
+
+      const seriesId =
+        getWeebCentralSeriesId(
+          seriesUrl
+        );
+
+
+      const canonicalUrl =
+        "https://weebcentral.com/series/" +
+        seriesId;
+
+
+      const seriesHtml =
+        await fetchWeebCentralText(
+          canonicalUrl
+        );
+
+
+      const titleMatch =
+        seriesHtml.match(
+          /<meta property="og:title" content="([^"]+?)(?: \| Weeb Central)?">/i
+        );
+
+
+      const title = decodeHtmlText(
+        titleMatch
+          ? titleMatch[1]
+          : "Manga"
+      );
+
+
+      const chapterHtml =
+        await fetchWeebCentralText(
+          canonicalUrl +
+          "/full-chapter-list",
+          {
+            "HX-Request": "true"
+          }
+        );
+
+
+      const chapters = [];
+
+      const chapterPattern =
+        /href="https:\/\/weebcentral\.com\/chapters\/([0-9A-HJKMNP-TV-Z]{26})"[\s\S]*?<span class="">\s*([^<]+?)\s*<\/span>[\s\S]*?<time[^>]*datetime="([^"]*)"/gi;
+
+      let chapterMatch;
+
+
+      while (
+        (
+          chapterMatch =
+            chapterPattern.exec(
+              chapterHtml
+            )
+        ) !== null
+      ) {
+
+        chapters.push({
+          id: chapterMatch[1],
+          title: decodeHtmlText(
+            chapterMatch[2].trim()
+          ),
+          date: chapterMatch[3]
+            ? chapterMatch[3].slice(0, 10)
+            : ""
+        });
+
+      }
+
+
+      chapters.reverse();
+
+
+      chapters.forEach(
+        function (chapter, index) {
+          chapter.index = index + 1;
+        }
+      );
+
+
+      if (chapters.length === 0) {
+        throw new Error(
+          "No chapters found"
+        );
+      }
+
+
+      return c.json({
+        title,
+        chapters
+      });
+
+    } catch (error) {
+
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Cannot load WeebCentral series"
+        },
+        400
+      );
+
+    }
+
+  }
+);
+
+
+app.post(
+  "/weebcentral/chapter",
+  async (c) => {
+
+    try {
+
+      const body =
+        await c.req.json();
+
+      const chapterId =
+        String(
+          body.chapterId || ""
+        );
+
+
+      if (
+        !/^[0-9A-HJKMNP-TV-Z]{26}$/i.test(
+          chapterId
+        )
+      ) {
+        return c.json(
+          {
+            error:
+              "Invalid chapter ID"
+          },
+          400
+        );
+      }
+
+
+      const mangaTitle =
+        sanitizeFileName(
+          body.mangaTitle || "Manga"
+        );
+
+      const chapterTitle =
+        sanitizeFileName(
+          body.chapterTitle ||
+          "Chapter"
+        );
+
+      const shouldMerge =
+        body.shouldMerge !== false;
+
+
+      const imageListHtml =
+        await fetchWeebCentralText(
+          "https://weebcentral.com/chapters/" +
+          chapterId +
+          "/images?is_prev=False&" +
+          "current_page=1&" +
+          "reading_style=long_strip",
+          {
+            "HX-Request": "true"
+          }
+        );
+
+
+      const imageUrls = [];
+      const imagePattern =
+        /<img[\s\S]*?\ssrc="([^"]+)"/gi;
+
+      let imageMatch;
+
+
+      while (
+        (
+          imageMatch =
+            imagePattern.exec(
+              imageListHtml
+            )
+        ) !== null
+      ) {
+
+        const imageUrl =
+          decodeHtmlText(
+            imageMatch[1]
+          );
+
+        assertSafeRemoteImageUrl(
+          imageUrl
+        );
+
+        imageUrls.push(imageUrl);
+
+      }
+
+
+      if (imageUrls.length === 0) {
+        throw new Error(
+          "No chapter images found"
+        );
+      }
+
+
+      const images = [];
+
+
+      for (
+        let i = 0;
+        i < imageUrls.length;
+        i++
+      ) {
+
+        const imageUrl =
+          imageUrls[i];
+
+        const response =
+          await fetch(imageUrl, {
+            headers: {
+              "User-Agent":
+                "Mozilla/5.0 Manga PDF Processor",
+              "Referer":
+                "https://weebcentral.com/chapters/" +
+                chapterId
+            }
+          });
+
+
+        if (!response.ok) {
+          throw new Error(
+            "Image " +
+            (i + 1) +
+            " download failed: HTTP " +
+            response.status
+          );
+        }
+
+
+        const buffer =
+          Buffer.from(
+            await response.arrayBuffer()
+          );
+
+
+        images.push(
+          await normalizeImageForPdf(
+            buffer,
+            "page_" +
+              String(i + 1)
+                .padStart(4, "0") +
+              getImageExtensionFromUrl(
+                imageUrl
+              )
+          )
+        );
+
+      }
+
+
+      const session = {
+        zip: new JSZip()
+      };
+
+
+      const outputCount =
+        await writeOperationsToZip({
+          operations:
+            buildOperations(
+              images,
+              shouldMerge
+            ),
+          baseFileName:
+            mangaTitle +
+            " " +
+            chapterTitle,
+          session,
+          addOperation:
+            async function (
+              targetPdf,
+              operation
+            ) {
+              await addImageOperation(
+                targetPdf,
+                operation
+              );
+            }
+        });
+
+
+      const archiveData =
+        await session.zip.generateAsync({
+          type: "arraybuffer",
+          compression: "DEFLATE",
+          compressionOptions: {
+            level: 6
+          }
+        });
+
+
+      return c.body(
+        archiveData,
+        {
+          headers: {
+            "Content-Type":
+              "application/zip",
+            "X-Output-Count":
+              String(outputCount)
+          }
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        "WeebCentral chapter error:",
+        error
+      );
+
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Cannot process chapter"
+        },
+        500
+      );
+
+    }
+
+  }
+);
+
+
+app.post(
+  "/process",
+  async (c) => {
+
+    try {
+
+      const formData =
+        await c.req.formData();
+
+
+      const file =
+        formData.get("file");
+
+
+      const shouldMerge =
+        formData.get(
+          "shouldMerge"
+        ) === "true";
+
+
+      if (
+        !file ||
+        typeof file === "string"
+      ) {
+
+        return c.json(
+          {
+            error:
+              "Missing file"
+          },
+          400
+        );
+
+      }
+
+
+      const session =
+        {
+          zip: new JSZip()
+        };
+
+
+      const fileName =
+        file.name || "input";
+
+
+      const baseFileName =
+        getBaseFileName(
+          fileName
+        );
+
+
+      const inputBytes =
+        await file.arrayBuffer();
+
+
+      const lowerName =
+        fileName.toLowerCase();
+
+
+      let outputCount = 0;
+
+
+      if (
+        lowerName.endsWith(".pdf")
+      ) {
+
+        outputCount =
+          await processPdfFile(
+            inputBytes,
+            baseFileName,
+            shouldMerge,
+            session
+          );
+
+      } else if (
+        lowerName.endsWith(".cbz")
+      ) {
+
+        outputCount =
+          await processCbzFile(
+            inputBytes,
+            baseFileName,
+            shouldMerge,
+            session
+          );
+
+      } else {
+
+        return c.json(
+          {
+            error:
+              "Unsupported file type"
+          },
+          400
+        );
+
+      }
+
+
+      if (outputCount < 1) {
+
+        return c.json(
+          {
+            error:
+              "No pages or images found"
+          },
+          400
+        );
+
+      }
+
+
+      const archiveData =
+        await session.zip.generateAsync(
+          {
+            type: "arraybuffer",
+            compression: "DEFLATE",
+            compressionOptions: {
+              level: 6
+            }
+          }
+        );
+
+
+      return c.body(
+        archiveData,
+        {
+          headers: {
+            "Content-Type":
+              "application/zip",
+            "X-Output-Count":
+              String(outputCount)
+          }
+        }
+      );
+
+    } catch (error) {
+
+      console.error(
+        "Error in /process:",
+        error
+      );
+
+
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Processing error"
+        },
+        500
+      );
+
+    }
+
+  }
+);
+
+
+/* ============================================================
+   KINDLE HELPERS
+   ============================================================ */
+
+
+function readCookie(header, name) {
+
+  const items = String(header || "")
+    .split(";");
+
+
+  for (const item of items) {
+
+    const parts = item.trim().split("=");
+
+    const key = parts.shift();
+
+
+    if (key === name) {
+      return decodeURIComponent(
+        parts.join("=")
+      );
+    }
+
+  }
+
+
+  return "";
+
+}
+
+
+async function fetchKindleWorker(
+  pathname,
+  options = {}
+) {
+
+  const workerUrl = String(
+    process.env.KINDLE_WORKER_URL || ""
+  ).replace(/\/$/, "");
+
+  const sharedSecret =
+    process.env.KINDLE_SHARED_SECRET || "";
+
+
+  if (!workerUrl || !sharedSecret) {
+    throw new Error(
+      "Kindle worker is not configured"
+    );
+  }
+
+
+  const headers = new Headers(
+    options.headers || {}
+  );
+
+  headers.set(
+    "Authorization",
+    "Bearer " + sharedSecret
+  );
+
+
+  return fetch(
+    workerUrl + pathname,
+    {
+      ...options,
+      headers
+    }
+  );
+
+}
+
+
+/* ============================================================
+   WEEBCENTRAL HELPERS
+   ============================================================ */
+
+
+function getWeebCentralSeriesId(
+  value
+) {
+
+  let url;
+
+
+  try {
+    url = new URL(String(value));
+  } catch (_) {
+    throw new Error(
+      "Invalid WeebCentral URL"
+    );
+  }
+
+
+  if (
+    url.protocol !== "https:" ||
+    ![
+      "weebcentral.com",
+      "www.weebcentral.com"
+    ].includes(
+      url.hostname.toLowerCase()
+    )
+  ) {
+    throw new Error(
+      "Only https://weebcentral.com/series/... URLs are allowed"
+    );
+  }
+
+
+  const match = url.pathname.match(
+    /^\/series\/([0-9A-HJKMNP-TV-Z]{26})(?:\/|$)/i
+  );
+
+
+  if (!match) {
+    throw new Error(
+      "The URL does not contain a valid series ID"
+    );
+  }
+
+
+  return match[1];
+
+}
+
+
+async function fetchWeebCentralText(
+  url,
+  extraHeaders = {}
+) {
+
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 Manga PDF Processor",
+      "Accept": "text/html",
+      ...extraHeaders
+    }
+  });
+
+
+  if (!response.ok) {
+    throw new Error(
+      "WeebCentral returned HTTP " +
+      response.status
+    );
+  }
+
+
+  return response.text();
+
+}
+
+
+function assertSafeRemoteImageUrl(
+  value
+) {
+
+  let url;
+
+
+  try {
+    url = new URL(value);
+  } catch (_) {
+    throw new Error(
+      "Invalid chapter image URL"
+    );
+  }
+
+
+  const host =
+    url.hostname.toLowerCase();
+
+
+  if (
+    url.protocol !== "https:" ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    host.endsWith(".local") ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(
+      host
+    )
+  ) {
+    throw new Error(
+      "Unsafe chapter image URL"
+    );
+  }
+
+}
+
+
+function getImageExtensionFromUrl(
+  value
+) {
+
+  try {
+    const pathname =
+      new URL(value).pathname
+        .toLowerCase();
+
+
+    const match = pathname.match(
+      /\.(jpe?g|png|gif|webp)$/
+    );
+
+
+    return match
+      ? "." + match[1]
+      : ".img";
+
+  } catch (_) {
+    return ".img";
+  }
+
+}
+
+
+function stripHtmlTags(value) {
+
+  return String(value)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+}
+
+
+function decodeHtmlText(value) {
+
+  return String(value)
+    .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, "\"")
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(
+      /&#(\d+);/g,
+      function (_, code) {
+        return String.fromCodePoint(
+          Number(code)
+        );
+      }
+    )
+    .replace(
+      /&#x([0-9a-f]+);/gi,
+      function (_, code) {
+        return String.fromCodePoint(
+          parseInt(code, 16)
+        );
+      }
+    );
+
+}
+
+
+/* ============================================================
+   PDF PROCESSING
+   ============================================================ */
+
+
+async function processPdfFile(
+  inputBytes,
+  baseFileName,
+  shouldMerge,
+  session
+) {
+
+  const sourcePdf =
+    await PDFDocument.load(
+      inputBytes,
+      {
+        ignoreEncryption: true
+      }
+    );
+
+
+  const sourcePages =
+    sourcePdf.getPages();
+
+
+  if (
+    sourcePages.length === 0
+  ) {
+
+    return 0;
+
+  }
+
+
+  const items =
+    sourcePages.map(
+      function (
+        page,
+        index
+      ) {
+
+        const size =
+          page.getSize();
+
+
+        assertValidSize(
+          size.width,
+          size.height,
+          "PDF page " +
+          (index + 1)
+        );
+
+
+        return {
+
+          type: "pdf",
+
+          index,
+
+          page,
+
+          width:
+            size.width,
+
+          height:
+            size.height
+
+        };
+
+      }
+    );
+
+
+  const operations =
+    buildOperations(
+      items,
+      shouldMerge
+    );
+
+
+  return writeOperationsToZip({
+
+    operations,
+
+    baseFileName,
+
+    session,
+
+    addOperation:
+      async function (
+        targetPdf,
+        operation
+      ) {
+
+        await addPdfOperation(
+          targetPdf,
+          sourcePdf,
+          operation
+        );
+
+      }
+
+  });
+
+}
+
+
+/* ============================================================
+   CBZ PROCESSING
+   ============================================================ */
+
+
+async function processCbzFile(
+  inputBytes,
+  baseFileName,
+  shouldMerge,
+  session
+) {
+
+  const zip =
+    await JSZip.loadAsync(
+      inputBytes
+    );
+
+
+  const entries = [];
+
+
+  zip.forEach(
+    function (
+      relativePath,
+      zipFile
+    ) {
+
+      if (zipFile.dir) {
+        return;
+      }
+
+
+      if (
+        relativePath.startsWith(
+          "__MACOSX/"
+        )
+      ) {
+        return;
+      }
+
+
+      if (
+        !/\.(jpg|jpeg|png|gif|webp)$/i.test(
+          relativePath
+        )
+      ) {
+        return;
+      }
+
+
+      entries.push({
+        path: relativePath,
+        file: zipFile
+      });
+
+    }
+  );
+
+
+  entries.sort(
+    function (a, b) {
+
+      return a.path.localeCompare(
+        b.path,
+        undefined,
+        {
+          numeric: true,
+          sensitivity: "base"
+        }
+      );
+
+    }
+  );
+
+
+  if (
+    entries.length === 0
+  ) {
+
+    return 0;
+
+  }
+
+
+  const images = [];
+
+
+  for (
+    const entry of entries
+  ) {
+
+    const rawBuffer =
+      Buffer.from(
+        await entry.file.async(
+          "arraybuffer"
+        )
+      );
+
+
+    const image =
+      await normalizeImageForPdf(
+        rawBuffer,
+        entry.path
+      );
+
+
+    images.push(
+      image
+    );
+
+  }
+
+
+  const operations =
+    buildOperations(
+      images,
+      shouldMerge
+    );
+
+
+  return writeOperationsToZip({
+
+    operations,
+
+    baseFileName,
+
+    session,
+
+    addOperation:
+      async function (
+        targetPdf,
+        operation
+      ) {
+
+        await addImageOperation(
+          targetPdf,
+          operation
+        );
+
+      }
+
+  });
+
+}
+
+
+/* ============================================================
+   PAGE PAIRING
+   ============================================================ */
+
+
+function buildOperations(
+  items,
+  shouldMerge
+) {
+
+  const operations = [];
+
+
+  if (
+    items.length === 0
+  ) {
+
+    return operations;
+
+  }
+
+
+  /*
+    Первая страница остается отдельной.
+    Обычно это обложка.
+  */
+
+  operations.push({
+
+    type: "single",
+
+    item: items[0]
+
+  });
+
+
+  let i = 1;
+
+
+  while (
+    i < items.length
+  ) {
+
+    const current =
+      items[i];
+
+
+    const next =
+      items[i + 1];
+
+
+    const currentHorizontal =
+      current.width >
+      current.height;
+
+
+    const nextHorizontal =
+      next
+        ? next.width >
+          next.height
+        : false;
+
+
+    if (
+      shouldMerge &&
+      next &&
+      !currentHorizontal &&
+      !nextHorizontal
+    ) {
+
+      operations.push({
+
+        type: "pair",
+
+        first: current,
+
+        second: next
+
+      });
+
+
+      i += 2;
+
+    } else {
+
+      operations.push({
+
+        type: "single",
+
+        item: current
+
+      });
+
+
+      i += 1;
+
+    }
+
+  }
+
+
+  return operations;
+
+}
+
+
+/* ============================================================
+   OUTPUT SPLITTING
+   ============================================================ */
+
+
+async function writeOperationsToZip({
+  operations,
+  baseFileName,
+  session,
+  addOperation
+}) {
+
+  let currentPdf =
+    await PDFDocument.create();
+
+
+  let currentBytes = null;
+
+  let operationCount = 0;
+
+  let outputIndex = 1;
+
+  let outputCount = 0;
+
+
+  for (
+    const operation of operations
+  ) {
+
+    /*
+      Сначала добавляем операцию
+      в текущий PDF.
+    */
+
+    await addOperation(
+      currentPdf,
+      operation
+    );
+
+
+    const candidateBytes =
+      await currentPdf.save({
+        useObjectStreams: true
+      });
+
+
+    /*
+      Если PDF превысил лимит,
+      а до текущей операции
+      уже были страницы:
+
+      1. сохраняем предыдущую версию;
+      2. создаем новый PDF;
+      3. повторно добавляем текущую операцию.
+
+      Таким образом текущая страница
+      НЕ теряется.
+    */
+
+    if (
+      candidateBytes.length >
+        MAX_PDF_SIZE &&
+      operationCount > 0 &&
+      currentBytes
+    ) {
+
+      addPdfBytesToSessionZip(
+        session,
+        baseFileName,
+        outputIndex,
+        currentBytes
+      );
+
+
+      outputIndex += 1;
+
+      outputCount += 1;
+
+
+      currentPdf =
+        await PDFDocument.create();
+
+
+      await addOperation(
+        currentPdf,
+        operation
+      );
+
+
+      currentBytes =
+        await currentPdf.save({
+          useObjectStreams: true
+        });
+
+
+      operationCount = 1;
+
+
+      /*
+        Одна операция сама по себе
+        может быть больше лимита.
+
+        В таком случае сохраняем ее
+        отдельным файлом.
+      */
+
+      if (
+        currentBytes.length >
+        MAX_PDF_SIZE
+      ) {
+
+        addPdfBytesToSessionZip(
+          session,
+          baseFileName,
+          outputIndex,
+          currentBytes
+        );
+
+
+        outputIndex += 1;
+
+        outputCount += 1;
+
+
+        currentPdf =
+          await PDFDocument.create();
+
+
+        currentBytes = null;
+
+        operationCount = 0;
+
+      }
+
+    } else {
+
+      currentBytes =
+        candidateBytes;
+
+
+      operationCount += 1;
+
+
+      if (
+        currentBytes.length >
+        MAX_PDF_SIZE
+      ) {
+
+        addPdfBytesToSessionZip(
+          session,
+          baseFileName,
+          outputIndex,
+          currentBytes
+        );
+
+
+        outputIndex += 1;
+
+        outputCount += 1;
+
+
+        currentPdf =
+          await PDFDocument.create();
+
+
+        currentBytes = null;
+
+        operationCount = 0;
+
+      }
+
+    }
+
+  }
+
+
+  if (
+    operationCount > 0 &&
+    currentBytes
+  ) {
+
+    addPdfBytesToSessionZip(
+      session,
+      baseFileName,
+      outputIndex,
+      currentBytes
+    );
+
+
+    outputCount += 1;
+
+  }
+
+
+  return outputCount;
+
+}
+
+
+/* ============================================================
+   ADD PDF PAGES
+   ============================================================ */
+
+
+async function addPdfOperation(
+  targetPdf,
+  sourcePdf,
+  operation
+) {
+
+  /*
+    Обычная страница:
+    просто копируем ее.
+  */
+
+  if (
+    operation.type ===
+    "single"
+  ) {
+
+    const copiedPages =
+      await targetPdf.copyPages(
+        sourcePdf,
+        [
+          operation.item.index
+        ]
+      );
+
+
+    targetPdf.addPage(
+      copiedPages[0]
+    );
+
+
+    return;
+
+  }
+
+
+  /*
+    Склейка двух вертикальных страниц.
+  */
+
+  const first =
+    operation.first;
+
+
+  const second =
+    operation.second;
+
+
+  const pageWidth =
+    first.width +
+    second.width;
+
+
+  const pageHeight =
+    Math.max(
+      first.height,
+      second.height
+    );
+
+
+  assertValidSize(
+    pageWidth,
+    pageHeight,
+    "Merged PDF page"
+  );
+
+
+  const embeddedFirst =
+    await targetPdf.embedPage(
+      first.page
+    );
+
+
+  const embeddedSecond =
+    await targetPdf.embedPage(
+      second.page
+    );
+
+
+  const mergedPage =
+    targetPdf.addPage([
+      pageWidth,
+      pageHeight
+    ]);
+
+
+  mergedPage.drawPage(
+    embeddedSecond,
+    {
+      x: 0,
+
+      y:
+        (
+          pageHeight -
+          second.height
+        ) / 2,
+
+      width:
+        second.width,
+
+      height:
+        second.height
+    }
+  );
+
+
+  mergedPage.drawPage(
+    embeddedFirst,
+    {
+      x:
+        second.width,
+
+      y:
+        (
+          pageHeight -
+          first.height
+        ) / 2,
+
+      width:
+        first.width,
+
+      height:
+        first.height
+    }
+  );
+
+}
+
+
+/* ============================================================
+   ADD CBZ IMAGES
+   ============================================================ */
+
+
+async function addImageOperation(
+  targetPdf,
+  operation
+) {
+
+  if (
+    operation.type ===
+    "single"
+  ) {
+
+    const image =
+      operation.item;
+
+
+    const embedded =
+      await embedImage(
+        targetPdf,
+        image
+      );
+
+
+    const page =
+      targetPdf.addPage([
+        image.width,
+        image.height
+      ]);
+
+
+    page.drawImage(
+      embedded,
+      {
+        x: 0,
+        y: 0,
+
+        width:
+          image.width,
+
+        height:
+          image.height
+      }
+    );
+
+
+    return;
+
+  }
+
+
+  const first =
+    operation.first;
+
+
+  const second =
+    operation.second;
+
+
+  const pageWidth =
+    first.width +
+    second.width;
+
+
+  const pageHeight =
+    Math.max(
+      first.height,
+      second.height
+    );
+
+
+  assertValidSize(
+    pageWidth,
+    pageHeight,
+    "Merged image page"
+  );
+
+
+  const embeddedFirst =
+    await embedImage(
+      targetPdf,
+      first
+    );
+
+
+  const embeddedSecond =
+    await embedImage(
+      targetPdf,
+      second
+    );
+
+
+  const page =
+    targetPdf.addPage([
+      pageWidth,
+      pageHeight
+    ]);
+
+
+  page.drawImage(
+    embeddedSecond,
+    {
+      x: 0,
+
+      y:
+        (
+          pageHeight -
+          second.height
+        ) / 2,
+
+      width:
+        second.width,
+
+      height:
+        second.height
+    }
+  );
+
+
+  page.drawImage(
+    embeddedFirst,
+    {
+      x:
+        second.width,
+
+      y:
+        (
+          pageHeight -
+          first.height
+        ) / 2,
+
+      width:
+        first.width,
+
+      height:
+        first.height
+    }
+  );
+
+}
+
+
+/* ============================================================
+   IMAGE EMBEDDING
+   ============================================================ */
+
+
+async function embedImage(
+  pdfDoc,
+  image
+) {
+
+  if (
+    image.format === "jpg"
+  ) {
+
+    return pdfDoc.embedJpg(
+      image.bytes
+    );
+
+  }
+
+
+  if (
+    image.format === "png"
+  ) {
+
+    return pdfDoc.embedPng(
+      image.bytes
+    );
+
+  }
+
+
+  throw new Error(
+    "Unsupported normalized image format: " +
+    image.format
+  );
+
+}
+
+
+/* ============================================================
+   IMAGE NORMALIZATION
+   ============================================================ */
+
+
+let sharpPromise = null;
+
+
+async function getSharp() {
+
+  if (!sharpPromise) {
+
+    sharpPromise =
+      import("sharp")
+        .then(
+          function (module) {
+
+            return (
+              module.default ||
+              module
+            );
+
+          }
+        );
+
+  }
+
+
+  return sharpPromise;
+
+}
+
+
+async function normalizeImageForPdf(
+  buffer,
+  path
+) {
+
+  const sharp =
+    await getSharp();
+
+
+  const detectedFormat =
+    detectImageFormat(
+      buffer,
+      path
+    );
+
+
+  const metadata =
+    await sharp(
+      buffer,
+      {
+        animated: false
+      }
+    ).metadata();
+
+
+  if (
+    !metadata.width ||
+    !metadata.height
+  ) {
+
+    throw new Error(
+      "Cannot read image dimensions: " +
+      path
+    );
+
+  }
+
+
+  let bytes =
+    buffer;
+
+
+  let format =
+    detectedFormat;
+
+
+  let width =
+    metadata.width;
+
+
+  let height =
+    metadata.height;
+
+
+  /*
+    pdf-lib поддерживает JPG и PNG.
+
+    GIF и WEBP преобразуем в PNG.
+  */
+
+  if (
+    format !== "jpg" &&
+    format !== "png"
+  ) {
+
+    bytes =
+      await sharp(
+        buffer,
+        {
+          animated: false
+        }
+      )
+        .png()
+        .toBuffer();
+
+
+    format = "png";
+
+
+    const convertedMetadata =
+      await sharp(
+        bytes
+      ).metadata();
+
+
+    width =
+      convertedMetadata.width ||
+      width;
+
+
+    height =
+      convertedMetadata.height ||
+      height;
+
+  }
+
+
+  assertValidSize(
+    width,
+    height,
+    path
+  );
+
+
+  return {
+
+    type: "image",
+
+    bytes,
+
+    format,
+
+    width,
+
+    height,
+
+    path
+
+  };
+
+}
+
+
+/* ============================================================
+   IMAGE FORMAT DETECTION
+   ============================================================ */
+
+
+function detectImageFormat(
+  buffer,
+  path
+) {
+
+  /*
+    JPEG signature
+  */
+
+  if (
+    buffer.length >= 2 &&
+    buffer[0] === 0xff &&
+    buffer[1] === 0xd8
+  ) {
+
+    return "jpg";
+
+  }
+
+
+  /*
+    PNG signature
+  */
+
+  if (
+    buffer.length >= 4 &&
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47
+  ) {
+
+    return "png";
+
+  }
+
+
+  const lowerPath =
+    path.toLowerCase();
+
+
+  if (
+    lowerPath.endsWith(".jpg") ||
+    lowerPath.endsWith(".jpeg")
+  ) {
+
+    return "jpg";
+
+  }
+
+
+  if (
+    lowerPath.endsWith(".png")
+  ) {
+
+    return "png";
+
+  }
+
+
+  if (
+    lowerPath.endsWith(".gif")
+  ) {
+
+    return "gif";
+
+  }
+
+
+  if (
+    lowerPath.endsWith(".webp")
+  ) {
+
+    return "webp";
+
+  }
+
+
+  throw new Error(
+    "Unsupported image: " +
+    path
+  );
+
+}
+
+
+/* ============================================================
+   ZIP OUTPUT
+   ============================================================ */
+
+
+function addPdfBytesToSessionZip(
+  session,
+  baseFileName,
+  outputIndex,
+  pdfBytes
+) {
+
+  const preferredName =
+    outputIndex === 1
+      ? baseFileName +
+        ".pdf"
+      : baseFileName +
+        "_" +
+        outputIndex +
+        ".pdf";
+
+
+  const uniqueName =
+    getUniqueZipFileName(
+      session.zip,
+      preferredName
+    );
+
+
+  session.zip.file(
+    uniqueName,
+    pdfBytes
+  );
+
+}
+
+
+function getUniqueZipFileName(
+  zip,
+  preferredName
+) {
+
+  if (
+    !zip.files[
+      preferredName
+    ]
+  ) {
+
+    return preferredName;
+
+  }
+
+
+  const extensionIndex =
+    preferredName
+      .toLowerCase()
+      .endsWith(".pdf")
+
+      ? preferredName.length - 4
+
+      : preferredName.length;
+
+
+  const base =
+    preferredName.slice(
+      0,
+      extensionIndex
+    );
+
+
+  const extension =
+    preferredName.slice(
+      extensionIndex
+    );
+
+
+  let counter = 2;
+
+
+  while (
+    zip.files[
+      base +
+      "_" +
+      counter +
+      extension
+    ]
+  ) {
+
+    counter += 1;
+
+  }
+
+
+  return (
+    base +
+    "_" +
+    counter +
+    extension
+  );
+
+}
+
+
+/* ============================================================
+   FILE NAME HELPERS
+   ============================================================ */
+
+
+function getBaseFileName(
+  fileName
+) {
+
+  const cleanName =
+    String(fileName)
+      .split(/[\\\\/]/)
+      .pop() ||
+    "file";
+
+
+  const withoutExtension =
+    cleanName.replace(
+      /\\.[^/.]+$/,
+      ""
+    );
+
+
+  return sanitizeFileName(
+    withoutExtension ||
+    "file"
+  );
+
+}
+
+
+function sanitizeFileName(
+  name
+) {
+
+  return (
+    String(name)
+
+      .replace(
+        /[<>:"/\\|?*]/g,
+        "_"
+      )
+
+      .replace(
+        /[\u0000-\u001F]/g,
+        "_"
+      )
+
+      .replace(
+        /\\s+/g,
+        " "
+      )
+
+      .trim()
+
+      .slice(
+        0,
+        120
+      )
+
+    || "file"
+  );
+
+}
+
+
+/* ============================================================
+   VALIDATION
+   ============================================================ */
+
+
+function assertValidSize(
+  width,
+  height,
+  label
+) {
+
+  if (
+    !Number.isFinite(width) ||
+    !Number.isFinite(height) ||
+    width <= 0 ||
+    height <= 0
+  ) {
+
+    throw new Error(
+      label +
+      ": invalid page size " +
+      width +
+      "x" +
+      height
+    );
+
+  }
+
+}
+
+
+export default app;

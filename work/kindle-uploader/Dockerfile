@@ -1,0 +1,24 @@
+FROM mcr.microsoft.com/playwright:v1.54.1-noble
+
+USER root
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    fluxbox \
+    novnc \
+    x11vnc \
+    xvfb \
+  && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV DISPLAY=:99
+
+COPY package.json ./
+RUN npm install --omit=dev
+
+COPY server.mjs start.sh ./
+RUN chmod +x /app/start.sh
+
+CMD ["/app/start.sh"]
