@@ -4089,20 +4089,8 @@ app.get(
   async (c) => {
 
     try {
-      const response =
-        await fetchKindleWorker(
-          "/api/status"
-        );
-
-      const data = await response.json();
-
-
-      if (!response.ok) {
-        throw new Error(
-          data.error ||
-          "Kindle worker unavailable"
-        );
-      }
+      const data =
+        await getKindleWorkerStatus();
 
 
       return c.json(data);
@@ -4126,24 +4114,11 @@ app.get(
   async (c) => {
 
     try {
-      const response =
-        await fetchKindleWorker(
-          "/api/connect-token",
-          { method: "POST" }
-        );
-
-      const data = await response.json();
+      const url =
+        await createKindleConnectionUrl();
 
 
-      if (!response.ok || !data.url) {
-        throw new Error(
-          data.error ||
-          "Cannot open Amazon connection"
-        );
-      }
-
-
-      return c.redirect(data.url);
+      return c.redirect(url);
     } catch (error) {
       return c.text(
         "Cannot open Amazon connection: " +
@@ -4163,32 +4138,16 @@ app.post(
     try {
       const body = await c.req.json();
 
-      const response =
-        await fetchKindleWorker(
-          "/api/tickets",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type":
-                "application/json"
-            },
-            body: JSON.stringify({
-              filename:
-                sanitizeFileName(
-                  body.filename ||
-                  "document.pdf"
-                ),
-              size: Number(body.size)
-            })
-          }
+      const result =
+        await createKindleUploadTicket(
+          body.filename,
+          body.size
         );
-
-      const data = await response.json();
 
 
       return c.json(
-        data,
-        response.status
+        result.data,
+        result.status
       );
     } catch (error) {
       return c.json(
@@ -4609,6 +4568,29 @@ async function fetchKindleWorker(
   options = {}
 ) {
 
+  const config =
+    getKindleWorkerConfig();
+
+  const headers =
+    buildKindleWorkerHeaders(
+      options.headers,
+      config.sharedSecret
+    );
+
+
+  return fetch(
+    config.workerUrl + pathname,
+    {
+      ...options,
+      headers
+    }
+  );
+
+}
+
+
+function getKindleWorkerConfig() {
+
   const workerUrl = String(
     process.env.KINDLE_WORKER_URL || ""
   ).replace(/\/$/, "");
@@ -4623,9 +4605,21 @@ async function fetchKindleWorker(
     );
   }
 
+  return {
+    workerUrl,
+    sharedSecret
+  };
+
+}
+
+
+function buildKindleWorkerHeaders(
+  initialHeaders = {},
+  sharedSecret
+) {
 
   const headers = new Headers(
-    options.headers || {}
+    initialHeaders || {}
   );
 
   headers.set(
@@ -4633,14 +4627,110 @@ async function fetchKindleWorker(
     "Bearer " + sharedSecret
   );
 
+  return headers;
 
-  return fetch(
-    workerUrl + pathname,
-    {
-      ...options,
-      headers
-    }
-  );
+}
+
+
+async function fetchKindleWorkerJson(
+  pathname,
+  options = {}
+) {
+
+  const response =
+    await fetchKindleWorker(
+      pathname,
+      options
+    );
+
+  const data =
+    await response.json();
+
+
+  return {
+    response,
+    data
+  };
+
+}
+
+
+async function getKindleWorkerStatus() {
+
+  const result =
+    await fetchKindleWorkerJson(
+      "/api/status"
+    );
+
+
+  if (!result.response.ok) {
+    throw new Error(
+      result.data.error ||
+      "Kindle worker unavailable"
+    );
+  }
+
+
+  return result.data;
+
+}
+
+
+async function createKindleConnectionUrl() {
+
+  const result =
+    await fetchKindleWorkerJson(
+      "/api/connect-token",
+      { method: "POST" }
+    );
+
+
+  if (
+    !result.response.ok ||
+    !result.data.url
+  ) {
+    throw new Error(
+      result.data.error ||
+      "Cannot open Amazon connection"
+    );
+  }
+
+
+  return String(result.data.url);
+
+}
+
+
+async function createKindleUploadTicket(
+  filename,
+  size
+) {
+
+  const result =
+    await fetchKindleWorkerJson(
+      "/api/tickets",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/json"
+        },
+        body: JSON.stringify({
+          filename:
+            sanitizeFileName(
+              filename ||
+              "document.pdf"
+            ),
+          size: Number(size)
+        })
+      }
+    );
+
+
+  return {
+    data: result.data,
+    status: result.response.status
+  };
 
 }
 
