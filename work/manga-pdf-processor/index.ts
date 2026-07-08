@@ -4255,107 +4255,46 @@ app.post(
       const body =
         await c.req.json();
 
-      const chapterId =
-        String(
-          body.chapterId || ""
-        );
-
-
-      if (
-        !isValidWeebCentralChapterId(
-          chapterId
-        )
-      ) {
-        return c.json(
-          {
-            error:
-              "Invalid chapter ID"
-          },
-          400
-        );
-      }
-
-
-      const mangaTitle =
-        sanitizeFileName(
-          body.mangaTitle || "Manga"
-        );
-
-      const chapterTitle =
-        sanitizeFileName(
-          body.chapterTitle ||
-          "Chapter"
-        );
-
-      const shouldMerge =
-        body.shouldMerge !== false;
-
-
-      const images =
-        await downloadWeebCentralChapterImages(
-          chapterId
-        );
-
-
-      const session =
-        createZipSession();
-
-
-      const outputCount =
-        await writeOperationsToZip({
-          operations:
-            buildOperations(
-              images,
-              shouldMerge
-            ),
-          baseFileName:
-            mangaTitle +
-            " " +
-            chapterTitle,
-          session,
-          addOperation:
-            async function (
-              targetPdf,
-              operation
-            ) {
-              await addImageOperation(
-                targetPdf,
-                operation
-              );
-            }
-        });
-
-
-      const archiveData =
-        await generateZipArchive(
-          session
+      const result =
+        await processWeebCentralChapterArchive(
+          body
         );
 
 
       return c.body(
-        archiveData,
+        result.archiveData,
         {
           headers:
             createZipArchiveHeaders(
-              outputCount
+              result.outputCount
             )
         }
       );
 
     } catch (error) {
 
-      console.error(
-        "WeebCentral chapter error:",
-        error
-      );
+      const status =
+        getRouteErrorStatus(error);
+
+
+      if (status >= 500) {
+
+        console.error(
+          "WeebCentral chapter error:",
+          error
+        );
+
+      }
 
       return c.json(
         {
           error:
-            error.message ||
-            "Cannot process chapter"
+            getRouteErrorMessage(
+              error,
+              "Cannot process chapter"
+            )
         },
-        500
+        status
       );
 
     }
@@ -4420,6 +4359,106 @@ app.post(
 
   }
 );
+
+
+/* ============================================================
+   WEEBCENTRAL ARCHIVE HELPERS
+   ============================================================ */
+
+
+async function processWeebCentralChapterArchive(
+  body
+) {
+
+  const input =
+    getWeebCentralChapterArchiveInput(
+      body
+    );
+
+  const images =
+    await downloadWeebCentralChapterImages(
+      input.chapterId
+    );
+
+  const session =
+    createZipSession();
+
+  const outputCount =
+    await writeOperationsToZip({
+      operations:
+        buildOperations(
+          images,
+          input.shouldMerge
+        ),
+      baseFileName:
+        input.mangaTitle +
+        " " +
+        input.chapterTitle,
+      session,
+      addOperation:
+        async function (
+          targetPdf,
+          operation
+        ) {
+          await addImageOperation(
+            targetPdf,
+            operation
+          );
+        }
+    });
+
+
+  return {
+    archiveData:
+      await generateZipArchive(
+        session
+      ),
+    outputCount
+  };
+
+}
+
+
+function getWeebCentralChapterArchiveInput(
+  body
+) {
+
+  const chapterId =
+    String(
+      body.chapterId || ""
+    );
+
+
+  if (
+    !isValidWeebCentralChapterId(
+      chapterId
+    )
+  ) {
+
+    throw createRouteError(
+      "Invalid chapter ID",
+      400
+    );
+
+  }
+
+
+  return {
+    chapterId,
+    mangaTitle:
+      sanitizeFileName(
+        body.mangaTitle || "Manga"
+      ),
+    chapterTitle:
+      sanitizeFileName(
+        body.chapterTitle ||
+        "Chapter"
+      ),
+    shouldMerge:
+      body.shouldMerge !== false
+  };
+
+}
 
 
 /* ============================================================
