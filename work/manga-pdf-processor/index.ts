@@ -2263,42 +2263,14 @@ const htmlContent = `<!DOCTYPE html>
             }
 
 
-            const chapterZip =
-              await JSZip.loadAsync(
-                await response.arrayBuffer()
-              );
-
-
-            for (
-              const [name, entry]
-              of Object.entries(
-                chapterZip.files
-              )
-            ) {
-
-              if (
-                entry.dir ||
-                !name
-                  .toLowerCase()
-                  .endsWith(".pdf")
-              ) {
-                continue;
-              }
-
-
-              await mergeCollector.add({
-                bytes:
-                  await entry.async(
-                    "uint8array"
-                  ),
-                sourceName:
-                  weebMangaTitle +
-                  " " +
-                  chapter.title +
-                  ".pdf"
-              });
-
-            }
+            await addPdfEntriesFromZipResponse(
+              response,
+              mergeCollector,
+              weebMangaTitle +
+              " " +
+              chapter.title +
+              ".pdf"
+            );
 
           }
 
@@ -2636,45 +2608,11 @@ const htmlContent = `<!DOCTYPE html>
             }
 
 
-            const fileZip =
-              await JSZip.loadAsync(
-                await response.arrayBuffer()
-              );
-
-
-            for (
-              const [name, entry]
-              of Object.entries(
-                fileZip.files
-              )
-            ) {
-
-              if (entry.dir) {
-                continue;
-              }
-
-
-              if (
-                !name
-                  .toLowerCase()
-                  .endsWith(".pdf")
-              ) {
-                continue;
-              }
-
-
-              await mergeCollector.add(
-                {
-                  bytes:
-                    await entry.async(
-                      "uint8array"
-                    ),
-                  sourceName:
-                    file.name
-                }
-              );
-
-            }
+            await addPdfEntriesFromZipResponse(
+              response,
+              mergeCollector,
+              file.name
+            );
 
           }
 
@@ -3006,6 +2944,48 @@ const htmlContent = `<!DOCTYPE html>
         );
       } catch (_) {
         return fallback;
+      }
+
+    }
+
+
+    async function addPdfEntriesFromZipResponse(
+      response,
+      mergeCollector,
+      sourceName
+    ) {
+
+      const archiveZip =
+        await JSZip.loadAsync(
+          await response.arrayBuffer()
+        );
+
+
+      for (
+        const [name, entry]
+        of Object.entries(
+          archiveZip.files
+        )
+      ) {
+
+        if (
+          entry.dir ||
+          !name
+            .toLowerCase()
+            .endsWith(".pdf")
+        ) {
+          continue;
+        }
+
+
+        await mergeCollector.add({
+          bytes:
+            await entry.async(
+              "uint8array"
+            ),
+          sourceName
+        });
+
       }
 
     }
