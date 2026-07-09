@@ -2310,16 +2310,7 @@ const htmlContent = `<!DOCTYPE html>
 
         } catch (error) {
 
-          progressScreen.classList.remove(
-            "show"
-          );
-          mainContent.classList.remove(
-            "hidden"
-          );
-          showMessage(
-            "Error: " + error.message,
-            "error"
-          );
+          showProcessingError(error);
 
         } finally {
 
@@ -2628,21 +2619,7 @@ const htmlContent = `<!DOCTYPE html>
 
         } catch (error) {
 
-          progressScreen.classList.remove(
-            "show"
-          );
-
-
-          mainContent.classList.remove(
-            "hidden"
-          );
-
-
-          showMessage(
-            "Error: " +
-            error.message,
-            "error"
-          );
+          showProcessingError(error);
 
 
           processBtn.disabled = false;
@@ -2903,6 +2880,27 @@ const htmlContent = `<!DOCTYPE html>
       setSuccessKindleSummary(
         sendToKindleForRun,
         outputCount
+      );
+
+    }
+
+
+    function showProcessingError(
+      error
+    ) {
+
+      progressScreen.classList.remove(
+        "show"
+      );
+
+      mainContent.classList.remove(
+        "hidden"
+      );
+
+      showMessage(
+        "Error: " +
+        error.message,
+        "error"
       );
 
     }
