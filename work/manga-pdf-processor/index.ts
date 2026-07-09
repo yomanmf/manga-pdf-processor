@@ -3028,6 +3028,199 @@ const htmlContent = `<!DOCTYPE html>
     }
 
 
+    function createPdfCollectorOperationTools(
+      combineAcrossSources
+    ) {
+
+      function assertPageSize(
+        width,
+        height,
+        label
+      ) {
+
+        if (
+          !Number.isFinite(width) ||
+          !Number.isFinite(height) ||
+          width <= 0 ||
+          height <= 0
+        ) {
+          throw new Error(
+            label +
+            ": invalid page size " +
+            width +
+            "x" +
+            height
+          );
+        }
+
+      }
+
+
+      function addSinglePageSpread(
+        targetPdf,
+        item
+      ) {
+
+        const pageWidth =
+          item.width * 2;
+
+        assertPageSize(
+          pageWidth,
+          item.height,
+          "Single manga spread"
+        );
+
+        return targetPdf.embedPage(
+          item.page
+        ).then((embeddedPage) => {
+          const spreadPage =
+            targetPdf.addPage([
+              pageWidth,
+              item.height
+            ]);
+
+          spreadPage.drawPage(
+            embeddedPage,
+            {
+              x: item.width,
+              y: 0,
+              width: item.width,
+              height: item.height
+            }
+          );
+        });
+
+      }
+
+
+      async function addOperation(
+        targetPdf,
+        operation
+      ) {
+
+        if (
+          operation.type === "single"
+        ) {
+
+          const item =
+            operation.item;
+
+          if (
+            combineAcrossSources &&
+            item.isVertical
+          ) {
+            await addSinglePageSpread(
+              targetPdf,
+              item
+            );
+            return;
+          }
+
+          const copiedPages =
+            await targetPdf.copyPages(
+              item.sourcePdf,
+              [item.pageIndex]
+            );
+
+          targetPdf.addPage(
+            copiedPages[0]
+          );
+          return;
+        }
+
+        const first =
+          operation.first;
+        const second =
+          operation.second;
+        const pageWidth =
+          first.width + second.width;
+        const pageHeight =
+          Math.max(
+            first.height,
+            second.height
+          );
+
+        assertPageSize(
+          pageWidth,
+          pageHeight,
+          "Merged PDF page"
+        );
+
+        const embeddedFirst =
+          await targetPdf.embedPage(
+            first.page
+          );
+        const embeddedSecond =
+          await targetPdf.embedPage(
+            second.page
+          );
+        const mergedPage =
+          targetPdf.addPage([
+            pageWidth,
+            pageHeight
+          ]);
+
+        mergedPage.drawPage(
+          embeddedSecond,
+          {
+            x: 0,
+            y:
+              (pageHeight - second.height) /
+              2,
+            width: second.width,
+            height: second.height
+          }
+        );
+        mergedPage.drawPage(
+          embeddedFirst,
+          {
+            x: second.width,
+            y:
+              (pageHeight - first.height) /
+              2,
+            width: first.width,
+            height: first.height
+          }
+        );
+
+      }
+
+
+      function getOperationSources(
+        operation
+      ) {
+
+        const names = [
+          operation.type === "single"
+            ? operation.item.sourceName
+            : operation.first.sourceName
+        ];
+
+        if (
+          operation.type === "pair" &&
+          !names.includes(
+            operation.second.sourceName
+          )
+        ) {
+          names.push(
+            operation.second.sourceName
+          );
+        }
+
+        return names;
+
+      }
+
+
+      return {
+        assertPageSize,
+        addOperation,
+        getOperationSources
+      };
+
+    }
+
+
     async function createPdfMergeCollector(
       zip,
       sendToKindleForRun,
@@ -3036,6 +3229,11 @@ const htmlContent = `<!DOCTYPE html>
 
       const maxSize =
         185 * 1024 * 1024;
+
+      const operationTools =
+        createPdfCollectorOperationTools(
+          combineAcrossSources
+        );
 
       let currentPdf =
         await PDFLib.PDFDocument.create();
@@ -3064,30 +3262,6 @@ const htmlContent = `<!DOCTYPE html>
       }
 
 
-      function assertClientPdfPageSize(
-        width,
-        height,
-        label
-      ) {
-
-        if (
-          !Number.isFinite(width) ||
-          !Number.isFinite(height) ||
-          width <= 0 ||
-          height <= 0
-        ) {
-          throw new Error(
-            label +
-            ": invalid page size " +
-            width +
-            "x" +
-            height
-          );
-        }
-
-      }
-
-
       function getPdfPageInfo(
         sourcePdf,
         sourcePages,
@@ -3101,7 +3275,7 @@ const htmlContent = `<!DOCTYPE html>
         const size =
           page.getSize();
 
-        assertClientPdfPageSize(
+        operationTools.assertPageSize(
           size.width,
           size.height,
           sourceName +
@@ -3127,210 +3301,13 @@ const htmlContent = `<!DOCTYPE html>
       }
 
 
-      function shouldRenderCollectorSingleAsSpread(
-        item
-      ) {
-
-        return Boolean(
-          combineAcrossSources &&
-          item.isVertical
-        );
-
-      }
-
-
-      async function addCollectorSingleAsSpread(
-        targetPdf,
-        item
-      ) {
-
-        const pageWidth =
-          item.width * 2;
-
-        const pageHeight =
-          item.height;
-
-        assertClientPdfPageSize(
-          pageWidth,
-          pageHeight,
-          "Single manga spread"
-        );
-
-        const embeddedPage =
-          await targetPdf.embedPage(
-            item.page
-          );
-
-        const spreadPage =
-          targetPdf.addPage([
-            pageWidth,
-            pageHeight
-          ]);
-
-        spreadPage.drawPage(
-          embeddedPage,
-          {
-            x:
-              item.width,
-
-            y: 0,
-
-            width:
-              item.width,
-
-            height:
-              item.height
-          }
-        );
-
-      }
-
-
-      async function addCollectorSinglePage(
-        targetPdf,
-        item
-      ) {
-
-        if (
-          shouldRenderCollectorSingleAsSpread(
-            item
-          )
-        ) {
-
-          await addCollectorSingleAsSpread(
-            targetPdf,
-            item
-          );
-
-          return;
-
-        }
-
-
-        const copiedPages =
-          await targetPdf.copyPages(
-            item.sourcePdf,
-            [
-              item.pageIndex
-            ]
-          );
-
-        targetPdf.addPage(
-          copiedPages[0]
-        );
-
-      }
-
-
-      async function addCollectorPairAsRightToLeftSpread(
-        targetPdf,
-        first,
-        second
-      ) {
-
-        const pageWidth =
-          first.width +
-          second.width;
-
-        const pageHeight =
-          Math.max(
-            first.height,
-            second.height
-          );
-
-        assertClientPdfPageSize(
-          pageWidth,
-          pageHeight,
-          "Merged PDF page"
-        );
-
-        const embeddedFirst =
-          await targetPdf.embedPage(
-            first.page
-          );
-
-        const embeddedSecond =
-          await targetPdf.embedPage(
-            second.page
-          );
-
-        const mergedPage =
-          targetPdf.addPage([
-            pageWidth,
-            pageHeight
-          ]);
-
-        mergedPage.drawPage(
-          embeddedSecond,
-          {
-            x: 0,
-
-            y:
-              (
-                pageHeight -
-                second.height
-              ) / 2,
-
-            width:
-              second.width,
-
-            height:
-              second.height
-          }
-        );
-
-        mergedPage.drawPage(
-          embeddedFirst,
-          {
-            x:
-              second.width,
-
-            y:
-              (
-                pageHeight -
-                first.height
-              ) / 2,
-
-            width:
-              first.width,
-
-            height:
-              first.height
-          }
-        );
-
-      }
-
-
       async function addCollectorOperationToPdf(
         targetPdf,
         operation
       ) {
-
-        if (
-          operation.type === "single"
-        ) {
-
-          await addCollectorSinglePage(
-            targetPdf,
-            operation.item
-          );
-
-          return;
-
-        }
-
-
-        const first =
-          operation.first;
-
-        const second =
-          operation.second;
-
-        await addCollectorPairAsRightToLeftSpread(
+        await operationTools.addOperation(
           targetPdf,
-          first,
-          second
+          operation
         );
 
       }
@@ -3339,30 +3316,9 @@ const htmlContent = `<!DOCTYPE html>
       function getOperationSources(
         operation
       ) {
-
-        if (
-          operation.type === "single"
-        ) {
-          return [
-            operation.item.sourceName
-          ];
-        }
-
-        const names = [
-          operation.first.sourceName
-        ];
-
-        if (
-          !names.includes(
-            operation.second.sourceName
-          )
-        ) {
-          names.push(
-            operation.second.sourceName
-          );
-        }
-
-        return names;
+        return operationTools.getOperationSources(
+          operation
+        );
 
       }
 
