@@ -2187,8 +2187,7 @@ const htmlContent = `<!DOCTYPE html>
         }
 
 
-        mainContent.classList.add("hidden");
-        progressScreen.classList.add("show");
+        showProcessingScreen();
 
 
         try {
@@ -2503,13 +2502,7 @@ const htmlContent = `<!DOCTYPE html>
 
         processBtn.disabled = true;
 
-        mainContent.classList.add(
-          "hidden"
-        );
-
-        progressScreen.classList.add(
-          "show"
-        );
+        showProcessingScreen();
 
 
         try {
@@ -2636,17 +2629,7 @@ const htmlContent = `<!DOCTYPE html>
 
         resetMainScreen();
 
-        successScreen.classList.remove(
-          "show"
-        );
-
-        progressScreen.classList.remove(
-          "show"
-        );
-
-        mainContent.classList.remove(
-          "hidden"
-        );
+        showMainInputScreen();
 
       }
     );
@@ -2858,13 +2841,7 @@ const htmlContent = `<!DOCTYPE html>
       sendToKindleForRun
     ) {
 
-      progressScreen.classList.remove(
-        "show"
-      );
-
-      successScreen.classList.add(
-        "show"
-      );
+      showSuccessScreen();
 
       successFileCount.textContent =
         processedCount;
@@ -2889,18 +2866,63 @@ const htmlContent = `<!DOCTYPE html>
       error
     ) {
 
-      progressScreen.classList.remove(
-        "show"
-      );
-
-      mainContent.classList.remove(
-        "hidden"
-      );
+      showMainInputScreen();
 
       showMessage(
         "Error: " +
         error.message,
         "error"
+      );
+
+    }
+
+
+    function showProcessingScreen() {
+
+      mainContent.classList.add(
+        "hidden"
+      );
+
+      successScreen.classList.remove(
+        "show"
+      );
+
+      progressScreen.classList.add(
+        "show"
+      );
+
+    }
+
+
+    function showSuccessScreen() {
+
+      progressScreen.classList.remove(
+        "show"
+      );
+
+      mainContent.classList.add(
+        "hidden"
+      );
+
+      successScreen.classList.add(
+        "show"
+      );
+
+    }
+
+
+    function showMainInputScreen() {
+
+      progressScreen.classList.remove(
+        "show"
+      );
+
+      successScreen.classList.remove(
+        "show"
+      );
+
+      mainContent.classList.remove(
+        "hidden"
       );
 
     }
