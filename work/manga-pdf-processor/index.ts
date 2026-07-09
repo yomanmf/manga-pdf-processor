@@ -2134,191 +2134,194 @@ const htmlContent = `<!DOCTYPE html>
 
     weebDownloadBtn.addEventListener(
       "click",
-      async function () {
-
-        let selectedChapters;
-
-        weebDownloadBtn.disabled = true;
+      runWeebCentralProcessing
+    );
 
 
-        try {
+    async function runWeebCentralProcessing() {
 
-          const seriesUrl =
-            weebUrl.value.trim();
+      let selectedChapters;
 
-          if (
-            !weebChapters.length ||
-            weebLoadedSeriesUrl !== seriesUrl
-          ) {
-            await loadWeebSeries({
-              throwOnError: true
-            });
-          }
+      weebDownloadBtn.disabled = true;
 
-          selectedChapters =
-            parseChapterSelection(
-              weebSelection.value,
-              weebChapters
-            );
-        } catch (error) {
-          showMessage(
-            "WeebCentral: " +
-              error.message,
-            "error"
-          );
-          updateWeebControls();
-          return;
+
+      try {
+
+        const seriesUrl =
+          weebUrl.value.trim();
+
+        if (
+          !weebChapters.length ||
+          weebLoadedSeriesUrl !== seriesUrl
+        ) {
+          await loadWeebSeries({
+            throwOnError: true
+          });
         }
 
-
-        let sendToKindleForRun;
-
-
-        try {
-          sendToKindleForRun =
-            await getKindleSendingForRun();
-        } catch (error) {
-          showMessage(
+        selectedChapters =
+          parseChapterSelection(
+            weebSelection.value,
+            weebChapters
+          );
+      } catch (error) {
+        showMessage(
+          "WeebCentral: " +
             error.message,
-            "error"
-          );
-          updateWeebControls();
-          return;
-        }
+          "error"
+        );
+        updateWeebControls();
+        return;
+      }
 
 
-        showProcessingScreen();
+      let sendToKindleForRun;
 
 
-        try {
-
-          const finalZip =
-            createFinalZip(
-              sendToKindleForRun
-            );
-
-          const mergeCollector =
-            await createPdfMergeCollector(
-              finalZip,
-              sendToKindleForRun,
-              shouldMerge
-            );
+      try {
+        sendToKindleForRun =
+          await getKindleSendingForRun();
+      } catch (error) {
+        showMessage(
+          error.message,
+          "error"
+        );
+        updateWeebControls();
+        return;
+      }
 
 
-          for (
-            let i = 0;
-            i < selectedChapters.length;
-            i++
-          ) {
-
-            const chapter =
-              selectedChapters[i];
+      showProcessingScreen();
 
 
-            progressText.textContent =
-              "Downloading " +
-              (i + 1) +
-              "/" +
-              selectedChapters.length +
-              ": " +
-              chapter.title;
+      try {
 
-
-            const response =
-              await fetch(
-                "/weebcentral/chapter",
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type":
-                      "application/json"
-                  },
-                  body: JSON.stringify({
-                    chapterId: chapter.id,
-                    chapterTitle:
-                      chapter.title,
-                    mangaTitle:
-                      weebMangaTitle,
-                    shouldMerge
-                  })
-                }
-              );
-
-
-            await ensureSuccessfulResponse(
-              response,
-              "Chapter download failed",
-              chapter.title
-            );
-
-
-            await addPdfEntriesFromZipResponse(
-              response,
-              mergeCollector,
-              weebMangaTitle +
-              " " +
-              chapter.title +
-              ".pdf"
-            );
-
-          }
-
-
-          progressText.textContent =
-            "Merging PDFs up to 200 MB...";
-
-
-          const outputCount =
-            await mergeCollector.finish();
-
-
-          const firstChapter =
-            selectedChapters[0];
-
-          const lastChapter =
-            selectedChapters[
-              selectedChapters.length - 1
-            ];
-
-
-          if (!sendToKindleForRun) {
-
-            await downloadFinalZip(
-              finalZip,
-              sanitizeClientFileName(
-                weebMangaTitle +
-                " " +
-                firstChapter.title +
-                (firstChapter.id ===
-                  lastChapter.id
-                  ? ""
-                  : " - " +
-                    lastChapter.title)
-              ) +
-              "_processed.zip"
-            );
-
-          }
-
-
-          showProcessingSuccess(
-            selectedChapters.length,
-            outputCount,
+        const finalZip =
+          createFinalZip(
             sendToKindleForRun
           );
 
-        } catch (error) {
+        const mergeCollector =
+          await createPdfMergeCollector(
+            finalZip,
+            sendToKindleForRun,
+            shouldMerge
+          );
 
-          showProcessingError(error);
 
-        } finally {
+        for (
+          let i = 0;
+          i < selectedChapters.length;
+          i++
+        ) {
 
-          weebDownloadBtn.disabled = false;
+          const chapter =
+            selectedChapters[i];
+
+
+          progressText.textContent =
+            "Downloading " +
+            (i + 1) +
+            "/" +
+            selectedChapters.length +
+            ": " +
+            chapter.title;
+
+
+          const response =
+            await fetch(
+              "/weebcentral/chapter",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type":
+                    "application/json"
+                },
+                body: JSON.stringify({
+                  chapterId: chapter.id,
+                  chapterTitle:
+                    chapter.title,
+                  mangaTitle:
+                    weebMangaTitle,
+                  shouldMerge
+                })
+              }
+            );
+
+
+          await ensureSuccessfulResponse(
+            response,
+            "Chapter download failed",
+            chapter.title
+          );
+
+
+          await addPdfEntriesFromZipResponse(
+            response,
+            mergeCollector,
+            weebMangaTitle +
+            " " +
+            chapter.title +
+            ".pdf"
+          );
 
         }
 
+
+        progressText.textContent =
+          "Merging PDFs up to 200 MB...";
+
+
+        const outputCount =
+          await mergeCollector.finish();
+
+
+        const firstChapter =
+          selectedChapters[0];
+
+        const lastChapter =
+          selectedChapters[
+            selectedChapters.length - 1
+          ];
+
+
+        if (!sendToKindleForRun) {
+
+          await downloadFinalZip(
+            finalZip,
+            sanitizeClientFileName(
+              weebMangaTitle +
+              " " +
+              firstChapter.title +
+              (firstChapter.id ===
+                lastChapter.id
+                ? ""
+                : " - " +
+                  lastChapter.title)
+            ) +
+            "_processed.zip"
+          );
+
+        }
+
+
+        showProcessingSuccess(
+          selectedChapters.length,
+          outputCount,
+          sendToKindleForRun
+        );
+
+      } catch (error) {
+
+        showProcessingError(error);
+
+      } finally {
+
+        weebDownloadBtn.disabled = false;
+
       }
-    );
+
+    }
 
 
     uploadArea.addEventListener(
@@ -2476,151 +2479,154 @@ const htmlContent = `<!DOCTYPE html>
 
     processBtn.addEventListener(
       "click",
-      async function () {
-
-        if (
-          selectedFiles.length === 0
-        ) {
-          return;
-        }
+      runUploadedFilesProcessing
+    );
 
 
-        let sendToKindleForRun;
+    async function runUploadedFilesProcessing() {
+
+      if (
+        selectedFiles.length === 0
+      ) {
+        return;
+      }
 
 
-        try {
-          sendToKindleForRun =
-            await getKindleSendingForRun();
-        } catch (error) {
-          showMessage(
-            error.message,
-            "error"
-          );
-          return;
-        }
+      let sendToKindleForRun;
 
 
-        processBtn.disabled = true;
-
-        showProcessingScreen();
-
-
-        try {
-          const finalZip =
-            createFinalZip(
-              sendToKindleForRun
-            );
-
-          const mergeCollector =
-            await createPdfMergeCollector(
-              finalZip,
-              sendToKindleForRun,
-              shouldMerge
-            );
+      try {
+        sendToKindleForRun =
+          await getKindleSendingForRun();
+      } catch (error) {
+        showMessage(
+          error.message,
+          "error"
+        );
+        return;
+      }
 
 
-          for (
-            let i = 0;
-            i < selectedFiles.length;
-            i++
-          ) {
+      processBtn.disabled = true;
 
-            const file =
-              selectedFiles[i];
+      showProcessingScreen();
 
 
-            progressText.textContent =
-              "File " +
-              (i + 1) +
-              "/" +
-              selectedFiles.length +
-              ": " +
-              file.name;
-
-
-            const formData =
-              new FormData();
-
-
-            formData.append(
-              "file",
-              file
-            );
-
-
-            formData.append(
-              "shouldMerge",
-              String(shouldMerge)
-            );
-
-
-            const response =
-              await fetch(
-                "/process",
-                {
-                  method: "POST",
-                  body: formData
-                }
-              );
-
-
-            await ensureSuccessfulResponse(
-              response,
-              "Processing error",
-              file.name
-            );
-
-
-            await addPdfEntriesFromZipResponse(
-              response,
-              mergeCollector,
-              file.name
-            );
-
-          }
-
-
-          progressText.textContent =
-            "Merging PDFs up to 200 MB...";
-
-
-          const outputCount =
-            await mergeCollector.finish();
-
-
-          if (!sendToKindleForRun) {
-
-            progressText.textContent =
-              "Creating archive...";
-
-            await downloadFinalZip(
-              finalZip,
-              buildArchiveBaseName(
-                selectedFiles
-              ) +
-              "_processed.zip"
-            );
-
-          }
-
-
-          showProcessingSuccess(
-            selectedFiles.length,
-            outputCount,
+      try {
+        const finalZip =
+          createFinalZip(
             sendToKindleForRun
           );
 
-        } catch (error) {
+        const mergeCollector =
+          await createPdfMergeCollector(
+            finalZip,
+            sendToKindleForRun,
+            shouldMerge
+          );
 
-          showProcessingError(error);
+
+        for (
+          let i = 0;
+          i < selectedFiles.length;
+          i++
+        ) {
+
+          const file =
+            selectedFiles[i];
 
 
-          processBtn.disabled = false;
+          progressText.textContent =
+            "File " +
+            (i + 1) +
+            "/" +
+            selectedFiles.length +
+            ": " +
+            file.name;
+
+
+          const formData =
+            new FormData();
+
+
+          formData.append(
+            "file",
+            file
+          );
+
+
+          formData.append(
+            "shouldMerge",
+            String(shouldMerge)
+          );
+
+
+          const response =
+            await fetch(
+              "/process",
+              {
+                method: "POST",
+                body: formData
+              }
+            );
+
+
+          await ensureSuccessfulResponse(
+            response,
+            "Processing error",
+            file.name
+          );
+
+
+          await addPdfEntriesFromZipResponse(
+            response,
+            mergeCollector,
+            file.name
+          );
 
         }
 
+
+        progressText.textContent =
+          "Merging PDFs up to 200 MB...";
+
+
+        const outputCount =
+          await mergeCollector.finish();
+
+
+        if (!sendToKindleForRun) {
+
+          progressText.textContent =
+            "Creating archive...";
+
+          await downloadFinalZip(
+            finalZip,
+            buildArchiveBaseName(
+              selectedFiles
+            ) +
+            "_processed.zip"
+          );
+
+        }
+
+
+        showProcessingSuccess(
+          selectedFiles.length,
+          outputCount,
+          sendToKindleForRun
+        );
+
+      } catch (error) {
+
+        showProcessingError(error);
+
+
+        processBtn.disabled = false;
+
       }
-    );
+
+    }
 
 
     newFileBtn.addEventListener(
