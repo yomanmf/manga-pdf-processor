@@ -2246,21 +2246,11 @@ const htmlContent = `<!DOCTYPE html>
               );
 
 
-            if (!response.ok) {
-
-              const errorText =
-                await readErrorTextFromResponse(
-                  response,
-                  "Chapter download failed"
-                );
-
-              throw new Error(
-                chapter.title +
-                ": " +
-                errorText
-              );
-
-            }
+            await ensureSuccessfulResponse(
+              response,
+              "Chapter download failed",
+              chapter.title
+            );
 
 
             await addPdfEntriesFromZipResponse(
@@ -2590,22 +2580,11 @@ const htmlContent = `<!DOCTYPE html>
               );
 
 
-            if (!response.ok) {
-
-              const errorText =
-                await readErrorTextFromResponse(
-                  response,
-                  "Processing error"
-                );
-
-
-              throw new Error(
-                file.name +
-                ": " +
-                errorText
-              );
-
-            }
+            await ensureSuccessfulResponse(
+              response,
+              "Processing error",
+              file.name
+            );
 
 
             await addPdfEntriesFromZipResponse(
@@ -2945,6 +2924,33 @@ const htmlContent = `<!DOCTYPE html>
       } catch (_) {
         return fallback;
       }
+
+    }
+
+
+    async function ensureSuccessfulResponse(
+      response,
+      fallback,
+      contextLabel
+    ) {
+
+      if (response.ok) {
+        return;
+      }
+
+
+      const errorText =
+        await readErrorTextFromResponse(
+          response,
+          fallback
+        );
+
+
+      throw new Error(
+        contextLabel +
+        ": " +
+        errorText
+      );
 
     }
 
