@@ -461,71 +461,21 @@ async function runQueue() {
   queueRunning = true;
   try {
     while (true) {
-      const job =
-        queue.find((item) => item.status === "queued") ||
-        queue.find((item) => item.status === "waiting_auth") ||
-        queue.find((item) =>
-          item.status === "failed" && item.attempts < 3
-        );
+      const job = nextQueueJob();
 
       if (!job) {
         return;
       }
 
-      const connected = await checkKindleSession();
-      if (!connected) {
-        job.status = "waiting_auth";
-        job.updatedAt = new Date().toISOString();
-        await saveQueue();
+      if (!await checkKindleSession()) {
+        await markJobWaitingForAuth(job);
         return;
       }
 
       try {
-        job.status = "processing";
-        job.attempts += 1;
-        job.error = "";
-        job.updatedAt = new Date().toISOString();
-        await saveQueue();
-
-        const jobTempDir = path.join(
-          TEMP_DIR,
-          job.id
-        );
-        await fsp.mkdir(jobTempDir, { recursive: true });
-        const tempPath = path.join(
-          jobTempDir,
-          sanitizeFileName(job.filename)
-        );
-
-        await downloadObject(job.key, tempPath);
-        try {
-          await uploadFileToKindle(tempPath, job.filename);
-        } finally {
-          await fsp.rm(jobTempDir, {
-            recursive: true,
-            force: true
-          });
-        }
-
-        await safeDeleteObject(job.key);
-        job.status = "sent";
-        job.sentAt = new Date().toISOString();
-        job.updatedAt = job.sentAt;
-        await saveQueue();
+        await processQueueJob(job);
       } catch (error) {
-        const message = errorMessage(error);
-        console.error("Kindle job failed", job.id, message);
-
-        if (error?.code === "AUTH_REQUIRED") {
-          kindleConnected = false;
-          job.status = "waiting_auth";
-        } else {
-          job.status = job.attempts >= 3 ? "failed" : "queued";
-        }
-        job.error = message;
-        job.updatedAt = new Date().toISOString();
-        lastWorkerError = message;
-        await saveQueue();
+        await recordQueueJobFailure(job, error);
 
         if (!kindleConnected || job.status === "failed") {
           return;
@@ -535,6 +485,67 @@ async function runQueue() {
   } finally {
     queueRunning = false;
   }
+}
+
+function nextQueueJob() {
+  return queue.find((item) => item.status === "queued") ||
+    queue.find((item) => item.status === "waiting_auth") ||
+    queue.find((item) =>
+      item.status === "failed" && item.attempts < 3
+    );
+}
+
+async function markJobWaitingForAuth(job) {
+  job.status = "waiting_auth";
+  job.updatedAt = new Date().toISOString();
+  await saveQueue();
+}
+
+async function processQueueJob(job) {
+  job.status = "processing";
+  job.attempts += 1;
+  job.error = "";
+  job.updatedAt = new Date().toISOString();
+  await saveQueue();
+
+  const jobTempDir = path.join(TEMP_DIR, job.id);
+  await fsp.mkdir(jobTempDir, { recursive: true });
+  const tempPath = path.join(
+    jobTempDir,
+    sanitizeFileName(job.filename)
+  );
+
+  try {
+    await downloadObject(job.key, tempPath);
+    await uploadFileToKindle(tempPath, job.filename);
+  } finally {
+    await fsp.rm(jobTempDir, {
+      recursive: true,
+      force: true
+    });
+  }
+
+  await safeDeleteObject(job.key);
+  job.status = "sent";
+  job.sentAt = new Date().toISOString();
+  job.updatedAt = job.sentAt;
+  await saveQueue();
+}
+
+async function recordQueueJobFailure(job, error) {
+  const message = errorMessage(error);
+  console.error("Kindle job failed", job.id, message);
+
+  if (error?.code === "AUTH_REQUIRED") {
+    kindleConnected = false;
+    job.status = "waiting_auth";
+  } else {
+    job.status = job.attempts >= 3 ? "failed" : "queued";
+  }
+  job.error = message;
+  job.updatedAt = new Date().toISOString();
+  lastWorkerError = message;
+  await saveQueue();
 }
 
 async function uploadFileToKindle(filePath, filename) {
