@@ -20,10 +20,17 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = process.env.DATA_DIR || "/data";
 const PROFILE_DIR = path.join(DATA_DIR, "amazon-profile");
 const QUEUE_PATH = path.join(DATA_DIR, "kindle-queue.json");
+const SESSION_STATE_PATH = path.join(
+  DATA_DIR,
+  "kindle-session-state.json"
+);
 const TEMP_DIR = "/tmp/kindle-uploads";
 const SEND_TO_KINDLE_URL =
   "https://www.amazon.com/sendtokindle";
 const MAX_FILE_SIZE = 200_000_000;
+const BROWSER_IDLE_MS = Number(
+  process.env.BROWSER_IDLE_MS || 60_000
+);
 const SHARED_SECRET = requiredEnv("KINDLE_SHARED_SECRET");
 const PUBLIC_BASE_URL = requiredEnv("PUBLIC_BASE_URL")
   .replace(/\/$/, "");
@@ -47,13 +54,18 @@ await fsp.mkdir(PROFILE_DIR, { recursive: true });
 await fsp.mkdir(TEMP_DIR, { recursive: true });
 
 let queue = await loadQueue();
+const savedSessionState = await loadSessionState();
 let queueWrite = Promise.resolve();
+let sessionWrite = Promise.resolve();
 let browserContext = null;
 let browserPage = null;
 let browserStarting = null;
+let browserClosing = null;
+let browserIdleTimer = null;
 let queueRunning = false;
-let kindleConnected = false;
-let lastSessionCheck = null;
+let activeVncConnections = 0;
+let kindleConnected = savedSessionState.connected;
+let lastSessionCheck = savedSessionState.lastSessionCheck;
 let lastWorkerError = "";
 
 const uploadTickets = new Map();
@@ -96,7 +108,7 @@ app.get("/connect/check", requireConnectToken, async (_req, res) => {
   try {
     const connected = await checkKindleSession();
     if (connected) {
-      void runQueue();
+      kickQueue();
     }
     res.json({ connected, url: safePageUrl() });
   } catch (error) {
@@ -111,6 +123,11 @@ app.get("/api/status", requireApiSecret, async (_req, res) => {
   const counts = countQueueStatuses();
   res.json({
     connected: kindleConnected,
+    sessionState:
+      lastSessionCheck
+        ? (kindleConnected ? "connected" : "needs_auth")
+        : "unknown",
+    browserRunning: isBrowserRunning(),
     lastSessionCheck,
     browserUrl: safePageUrl(),
     workerError: lastWorkerError,
@@ -129,14 +146,14 @@ app.post("/api/cleanup-smoke-tests", requireApiSecret, async (_req, res) => {
 });
 
 app.post("/api/connect-token", requireApiSecret, async (_req, res) => {
+  const token = crypto.randomBytes(32).toString("base64url");
+  const expiresAt = Date.now() + 10 * 60 * 1000;
+  connectTokens.set(token, { expiresAt });
+  pruneTokens(connectTokens);
+
   try {
     await ensureBrowser();
     await ensureSendToKindlePage();
-
-    const token = crypto.randomBytes(32).toString("base64url");
-    const expiresAt = Date.now() + 10 * 60 * 1000;
-    connectTokens.set(token, { expiresAt });
-    pruneTokens(connectTokens);
 
     res.json({
       url: PUBLIC_BASE_URL + "/connect?token=" +
@@ -144,6 +161,8 @@ app.post("/api/connect-token", requireApiSecret, async (_req, res) => {
       expiresAt: new Date(expiresAt).toISOString()
     });
   } catch (error) {
+    connectTokens.delete(token);
+    scheduleBrowserCloseIfIdle();
     res.status(500).json({ error: errorMessage(error) });
   }
 });
@@ -259,7 +278,7 @@ app.put("/upload/:id", async (req, res) => {
     };
     queue.push(job);
     await saveQueue();
-    void runQueue();
+    kickQueue();
 
     res.status(201).json({ job: publicJob(job) });
   } catch (error) {
@@ -307,10 +326,24 @@ server.on("upgrade", (request, socket, head) => {
 });
 
 vncWebSocketServer.on("connection", (webSocket) => {
+  activeVncConnections += 1;
+  clearBrowserIdleTimer();
+
   const vncSocket = net.createConnection({
     host: "127.0.0.1",
     port: 5900
   });
+
+  let connectionClosed = false;
+  const finishConnection = () => {
+    if (connectionClosed) return;
+    connectionClosed = true;
+    activeVncConnections = Math.max(
+      0,
+      activeVncConnections - 1
+    );
+    scheduleBrowserCloseIfIdle();
+  };
 
   vncSocket.on("data", (data) => {
     if (webSocket.readyState === 1) {
@@ -320,33 +353,58 @@ vncWebSocketServer.on("connection", (webSocket) => {
   webSocket.on("message", (data) => {
     vncSocket.write(data);
   });
-  webSocket.on("close", () => vncSocket.destroy());
-  webSocket.on("error", () => vncSocket.destroy());
-  vncSocket.on("close", () => webSocket.close());
-  vncSocket.on("error", () => webSocket.close());
+  webSocket.on("close", () => {
+    finishConnection();
+    vncSocket.destroy();
+  });
+  webSocket.on("error", () => {
+    finishConnection();
+    vncSocket.destroy();
+  });
+  vncSocket.on("close", () => {
+    finishConnection();
+    webSocket.close();
+  });
+  vncSocket.on("error", () => {
+    finishConnection();
+    webSocket.close();
+  });
 });
 
 server.listen(PORT, "0.0.0.0", () => {
   console.log("Kindle uploader listening on port", PORT);
   void cleanupSmokeTestJobs()
-    .then(() => ensureBrowser())
-    .then(() => checkKindleSession())
     .then(() => runQueue())
     .catch((error) => {
       lastWorkerError = errorMessage(error);
-      console.error("Browser startup failed", error);
+      console.error("Queue startup failed", error);
     });
 });
 
 setInterval(() => {
   pruneTokens(uploadTickets);
   pruneTokens(connectTokens);
-  void runQueue();
+  kickQueue();
+  scheduleBrowserCloseIfIdle();
 }, 30_000).unref();
 
 async function ensureBrowser() {
+  if (browserClosing) {
+    await browserClosing;
+  }
+
+  clearBrowserIdleTimer();
+
   if (browserContext && browserPage && !browserPage.isClosed()) {
     browserPage = pickBestBrowserPage() || browserPage;
+    return browserPage;
+  }
+  if (browserContext) {
+    browserPage =
+      pickBestBrowserPage() ||
+      await browserContext.newPage();
+    browserPage.setDefaultTimeout(30_000);
+    browserPage.setDefaultNavigationTimeout(90_000);
     return browserPage;
   }
   if (browserStarting) {
@@ -354,7 +412,8 @@ async function ensureBrowser() {
   }
 
   browserStarting = (async () => {
-    browserContext = await chromium.launchPersistentContext(
+    console.log("Starting Chromium for Kindle work");
+    const context = await chromium.launchPersistentContext(
       PROFILE_DIR,
       {
         headless: false,
@@ -368,15 +427,18 @@ async function ensureBrowser() {
       }
     );
 
-    const pages = browserContext.pages();
-    browserPage = pickBestBrowserPage() || pages[0] || await browserContext.newPage();
+    browserContext = context;
+    const pages = context.pages();
+    browserPage = pickBestBrowserPage() || pages[0] || await context.newPage();
     browserPage.setDefaultTimeout(30_000);
     browserPage.setDefaultNavigationTimeout(90_000);
 
-    browserContext.on("close", () => {
-      browserContext = null;
-      browserPage = null;
-      kindleConnected = false;
+    context.on("close", () => {
+      if (browserContext === context) {
+        browserContext = null;
+        browserPage = null;
+        clearBrowserIdleTimer();
+      }
     });
 
     return browserPage;
@@ -386,6 +448,67 @@ async function ensureBrowser() {
     return await browserStarting;
   } finally {
     browserStarting = null;
+  }
+}
+
+function isBrowserRunning() {
+  return Boolean(browserContext);
+}
+
+function clearBrowserIdleTimer() {
+  if (!browserIdleTimer) return;
+  clearTimeout(browserIdleTimer);
+  browserIdleTimer = null;
+}
+
+function hasLiveConnectTokens() {
+  pruneTokens(connectTokens);
+  return connectTokens.size > 0;
+}
+
+function scheduleBrowserCloseIfIdle() {
+  if (
+    browserIdleTimer ||
+    !isBrowserRunning()
+  ) return;
+
+  browserIdleTimer = setTimeout(() => {
+    browserIdleTimer = null;
+    void closeBrowserIfIdle().catch((error) => {
+      lastWorkerError = errorMessage(error);
+      console.error("Cannot close idle browser", error);
+    });
+  }, BROWSER_IDLE_MS);
+  browserIdleTimer.unref();
+}
+
+async function closeBrowserIfIdle() {
+  if (
+    !isBrowserRunning() ||
+    browserStarting ||
+    browserClosing ||
+    queueRunning ||
+    activeVncConnections > 0 ||
+    hasLiveConnectTokens() ||
+    nextQueueJob()
+  ) {
+    scheduleBrowserCloseIfIdle();
+    return false;
+  }
+
+  const context = browserContext;
+  browserClosing = context.close();
+
+  try {
+    await browserClosing;
+    if (browserContext === context) {
+      browserContext = null;
+      browserPage = null;
+    }
+    console.log("Closed idle Chromium");
+    return true;
+  } finally {
+    browserClosing = null;
   }
 }
 
@@ -450,7 +573,16 @@ async function checkKindleSession() {
   if (kindleConnected) {
     lastWorkerError = "";
   }
+  await saveSessionState();
   return kindleConnected;
+}
+
+function kickQueue() {
+  void runQueue().catch((error) => {
+    lastWorkerError = errorMessage(error);
+    console.error("Queue run failed", error);
+    scheduleBrowserCloseIfIdle();
+  });
 }
 
 async function runQueue() {
@@ -484,12 +616,15 @@ async function runQueue() {
     }
   } finally {
     queueRunning = false;
+    scheduleBrowserCloseIfIdle();
   }
 }
 
 function nextQueueJob() {
   return queue.find((item) => item.status === "queued") ||
-    queue.find((item) => item.status === "waiting_auth") ||
+    (kindleConnected
+      ? queue.find((item) => item.status === "waiting_auth")
+      : null) ||
     queue.find((item) =>
       item.status === "failed" && item.attempts < 3
     );
@@ -539,6 +674,7 @@ async function recordQueueJobFailure(job, error) {
   if (error?.code === "AUTH_REQUIRED") {
     kindleConnected = false;
     job.status = "waiting_auth";
+    await saveSessionState();
   } else {
     job.status = job.attempts >= 3 ? "failed" : "queued";
   }
@@ -721,6 +857,41 @@ async function safeDeleteObject(key) {
   } catch (error) {
     console.error("Cannot delete object", key, error);
   }
+}
+
+async function loadSessionState() {
+  try {
+    const parsed = JSON.parse(
+      await fsp.readFile(SESSION_STATE_PATH, "utf8")
+    );
+    return {
+      connected: Boolean(parsed.connected),
+      lastSessionCheck: parsed.lastSessionCheck || null
+    };
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      console.error("Cannot load Kindle session state", error);
+    }
+    return {
+      connected: false,
+      lastSessionCheck: null
+    };
+  }
+}
+
+async function saveSessionState() {
+  sessionWrite = sessionWrite.then(async () => {
+    const temporary = SESSION_STATE_PATH + ".tmp";
+    await fsp.writeFile(
+      temporary,
+      JSON.stringify({
+        connected: kindleConnected,
+        lastSessionCheck
+      }, null, 2)
+    );
+    await fsp.rename(temporary, SESSION_STATE_PATH);
+  });
+  return sessionWrite;
 }
 
 async function loadQueue() {

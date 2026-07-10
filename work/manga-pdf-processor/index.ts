@@ -1241,6 +1241,8 @@ const htmlContent = `<!DOCTYPE html>
 
     let kindleConnected = false;
 
+    let kindleSessionState = "unknown";
+
     let latestKindleCounts = {};
 
     let successKindleSummary = null;
@@ -1347,7 +1349,8 @@ const htmlContent = `<!DOCTYPE html>
 
         if (
           nextValue &&
-          !kindleConnected
+          kindleSessionState ===
+            "needs_auth"
         ) {
           showMessage(
             "Connect Amazon first, then press Refresh status.",
@@ -1495,6 +1498,12 @@ const htmlContent = `<!DOCTYPE html>
         kindleConnected =
           Boolean(data.connected);
 
+        kindleSessionState =
+          data.sessionState ||
+          (data.connected
+            ? "connected"
+            : "needs_auth");
+
         const storedPreference =
           getKindlePreference();
 
@@ -1523,7 +1532,11 @@ const htmlContent = `<!DOCTYPE html>
           data.connected
             ? "Amazon session connected · Kindle auto-send " +
               (shouldSendToKindle ? "ON" : "OFF")
-            : "Amazon session needs connection · Kindle auto-send " +
+            : kindleSessionState ===
+                "unknown"
+              ? "Amazon session will be checked on the next upload · Kindle auto-send " +
+                (shouldSendToKindle ? "ON" : "OFF")
+              : "Amazon session needs connection · Kindle auto-send " +
               (shouldSendToKindle
                 ? "will start after connection"
                 : "OFF");
@@ -1538,6 +1551,9 @@ const htmlContent = `<!DOCTYPE html>
       } catch (error) {
 
         kindleConnected = false;
+
+        kindleSessionState =
+          "unavailable";
 
         setKindleSendingEnabled(
           getKindlePreference() === "off"
@@ -1563,12 +1579,67 @@ const htmlContent = `<!DOCTYPE html>
     }
 
 
-    refreshKindleStatus();
+    const kindleStatusRefreshMs =
+      15000;
 
-    setInterval(
-      refreshKindleStatus,
-      15000
+    let kindleStatusTimer = null;
+
+
+    function stopKindleStatusPolling() {
+
+      if (!kindleStatusTimer) {
+        return;
+      }
+
+      clearInterval(
+        kindleStatusTimer
+      );
+
+      kindleStatusTimer = null;
+
+    }
+
+
+    function startKindleStatusPolling(
+      refreshImmediately = true
+    ) {
+
+      stopKindleStatusPolling();
+
+      if (document.hidden) {
+        return;
+      }
+
+      if (refreshImmediately) {
+        void refreshKindleStatus();
+      }
+
+      kindleStatusTimer = setInterval(
+        function () {
+          void refreshKindleStatus();
+        },
+        kindleStatusRefreshMs
+      );
+
+    }
+
+
+    document.addEventListener(
+      "visibilitychange",
+      function () {
+
+        if (document.hidden) {
+          stopKindleStatusPolling();
+          return;
+        }
+
+        startKindleStatusPolling(true);
+
+      }
     );
+
+
+    startKindleStatusPolling(true);
 
 
     async function getKindleSendingForRun() {
@@ -1581,8 +1652,20 @@ const htmlContent = `<!DOCTYPE html>
         await refreshKindleStatus();
 
       if (
-        !data ||
-        !data.connected
+        !data
+      ) {
+        throw new Error(
+          "Kindle uploader is unavailable. Try again in a moment."
+        );
+      }
+
+      if (
+        data.sessionState ===
+          "needs_auth" ||
+        (
+          !data.sessionState &&
+          !data.connected
+        )
       ) {
         throw new Error(
           "Amazon session is not connected. Click Connect Amazon, finish login, then Refresh status."

@@ -48,6 +48,10 @@ flowchart LR
 - The main web app is the user-facing entry point on Railway.
 - The Kindle uploader is isolated from the main app so Amazon browser
   automation and its queue can restart independently.
+- The Amazon Chromium browser starts only when a queued file or a manual
+  connection needs it, and closes again after the worker becomes idle.
+- Kindle status polling pauses while the user-facing browser tab is hidden and
+  refreshes immediately when the tab becomes visible again.
 - Temporary PDFs are stored in the configured S3-compatible object storage.
 - The queue and Amazon browser profile are stored on the Kindle uploader's
   persistent Railway volume.
