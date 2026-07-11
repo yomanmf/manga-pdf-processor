@@ -67,6 +67,24 @@ flowchart LR
 - If one PDF fails three times, it becomes `Failed` while other jobs remain
   visible and recoverable in the queue.
 
+### Kindle runtime lifecycle
+
+The Kindle worker keeps only the lightweight Node.js queue process alive while
+there is no work. Its heavier components are created on demand:
+
+1. A queued PDF starts Xvfb, Fluxbox and Chromium, then the worker sends the
+   document through the stored Amazon session.
+2. A manual **Connect Amazon** action additionally starts the local-only VNC
+   server so the Amazon login can be completed in the browser. The Amazon
+   password never enters the app or Railway variables.
+3. When no file is processing, no VNC client is connected and the temporary
+   connection link has expired, Chromium and the display processes are closed
+   after `BROWSER_IDLE_MS` (60 seconds by default).
+
+This avoids keeping the browser, Xvfb, Fluxbox and VNC in memory all day while
+retaining the persistent Amazon profile and queue on `/data`. `tini` is used as
+the container init process so stopped child processes are reaped reliably.
+
 ## Services
 
 - `work/manga-pdf-processor/index.ts` — main web app deployed on Railway as a
@@ -98,6 +116,22 @@ Keep values only in Railway variables, never in git:
 - `AWS_DEFAULT_REGION`
 - `AWS_S3_URL_STYLE`
 - `DATA_DIR`
+- `BROWSER_IDLE_MS` — optional idle timeout before Chromium and its display
+  runtime are stopped; defaults to `60000`.
+
+## Checks
+
+Run the automated checks from the repository root:
+
+```sh
+node work/runtime-optimization.test.mjs
+node work/manga-pdf-processor/pdf-utils.test.mjs
+node work/manga-pdf-processor/pdf-merge-contract.test.mjs
+```
+
+The first check protects the lazy-runtime contract: no X/VNC process may be
+started by the container entrypoint, and the worker must start and stop the
+display runtime together with browser work.
 
 ## Backup rule
 
