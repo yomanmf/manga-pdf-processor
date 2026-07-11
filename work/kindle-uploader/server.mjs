@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import http from "node:http";
@@ -23,6 +24,10 @@ const QUEUE_PATH = path.join(DATA_DIR, "kindle-queue.json");
 const SESSION_STATE_PATH = path.join(
   DATA_DIR,
   "kindle-session-state.json"
+);
+const DIAGNOSTICS_DIR = path.join(
+  DATA_DIR,
+  "kindle-diagnostics"
 );
 const TEMP_DIR = "/tmp/kindle-uploads";
 const SEND_TO_KINDLE_URL =
@@ -51,6 +56,7 @@ const bucketName = requiredEnv("AWS_S3_BUCKET_NAME");
 
 await fsp.mkdir(DATA_DIR, { recursive: true });
 await fsp.mkdir(PROFILE_DIR, { recursive: true });
+await fsp.mkdir(DIAGNOSTICS_DIR, { recursive: true });
 await fsp.mkdir(TEMP_DIR, { recursive: true });
 
 let queue = await loadQueue();
@@ -62,6 +68,11 @@ let browserPage = null;
 let browserStarting = null;
 let browserClosing = null;
 let browserIdleTimer = null;
+let displayRuntimeStarting = null;
+let displayRuntimeStopping = null;
+let xvfbProcess = null;
+let fluxboxProcess = null;
+let vncProcess = null;
 let queueRunning = false;
 let activeVncConnections = 0;
 let kindleConnected = savedSessionState.connected;
@@ -128,6 +139,8 @@ app.get("/api/status", requireApiSecret, async (_req, res) => {
         ? (kindleConnected ? "connected" : "needs_auth")
         : "unknown",
     browserRunning: isBrowserRunning(),
+    displayRuntimeRunning: isDisplayRuntimeRunning(),
+    vncRunning: isVncServerRunning(),
     lastSessionCheck,
     browserUrl: safePageUrl(),
     workerError: lastWorkerError,
@@ -135,6 +148,47 @@ app.get("/api/status", requireApiSecret, async (_req, res) => {
     recent: queue.slice(-20).reverse().map(publicJob)
   });
 });
+
+app.get("/api/jobs/:id", requireApiSecret, async (req, res) => {
+  const id = String(req.params.id || "");
+  const job = queue.find((item) => item.id === id);
+
+  if (!job) {
+    res.status(404).json({ error: "Kindle job not found" });
+    return;
+  }
+
+  res.json({ job: publicJob(job) });
+});
+
+app.get(
+  "/api/jobs/:id/evidence",
+  requireApiSecret,
+  async (req, res) => {
+    const id = String(req.params.id || "");
+    const job = queue.find((item) => item.id === id);
+
+    if (!job) {
+      res.status(404).json({ error: "Kindle job not found" });
+      return;
+    }
+    if (!isBrowserRunning()) {
+      res.status(409).json({ error: "Kindle browser is not running" });
+      return;
+    }
+
+    try {
+      const page = pickBestBrowserPage() || browserPage;
+      const evidence = await collectKindleEvidence(
+        page,
+        job.filename
+      );
+      res.json({ job: publicJob(job), evidence });
+    } catch (error) {
+      res.status(500).json({ error: errorMessage(error) });
+    }
+  }
+);
 
 app.post("/api/cleanup-smoke-tests", requireApiSecret, async (_req, res) => {
   const removed = await cleanupSmokeTestJobs();
@@ -153,6 +207,7 @@ app.post("/api/connect-token", requireApiSecret, async (_req, res) => {
 
   try {
     await ensureBrowser();
+    await ensureVncServer();
     await ensureSendToKindlePage();
 
     res.json({
@@ -199,6 +254,7 @@ app.post(
     pruneTokens(uploadTickets);
 
     res.json({
+      jobId: id,
       uploadUrl:
         PUBLIC_BASE_URL + "/upload/" + id +
         "?token=" + encodeURIComponent(token),
@@ -228,7 +284,12 @@ app.put("/upload/:id", async (req, res) => {
     return;
   }
 
-  uploadTickets.delete(id);
+  if (ticket.inProgress) {
+    res.status(409).json({ error: "Upload already in progress" });
+    return;
+  }
+
+  ticket.inProgress = true;
 
   const objectKey =
     "kindle-queue/" + id + "/" + ticket.filename;
@@ -278,10 +339,12 @@ app.put("/upload/:id", async (req, res) => {
     };
     queue.push(job);
     await saveQueue();
+    uploadTickets.delete(id);
     kickQueue();
 
     res.status(201).json({ job: publicJob(job) });
   } catch (error) {
+    ticket.inProgress = false;
     console.error("Upload failed", error);
     res.status(500).json({ error: errorMessage(error) });
   }
@@ -381,6 +444,27 @@ server.listen(PORT, "0.0.0.0", () => {
     });
 });
 
+let shuttingDown = false;
+async function shutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log("Received " + signal + ", stopping Kindle runtime");
+  clearBrowserIdleTimer();
+  try {
+    await browserContext?.close();
+  } catch (error) {
+    console.error("Cannot close Chromium during shutdown", error);
+  }
+  browserContext = null;
+  browserPage = null;
+  await stopDisplayRuntime();
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 10_000).unref();
+}
+
+process.once("SIGTERM", () => { void shutdown("SIGTERM"); });
+process.once("SIGINT", () => { void shutdown("SIGINT"); });
+
 setInterval(() => {
   pruneTokens(uploadTickets);
   pruneTokens(connectTokens);
@@ -413,6 +497,7 @@ async function ensureBrowser() {
 
   browserStarting = (async () => {
     console.log("Starting Chromium for Kindle work");
+    await ensureDisplayRuntime();
     const context = await chromium.launchPersistentContext(
       PROFILE_DIR,
       {
@@ -449,6 +534,149 @@ async function ensureBrowser() {
   } finally {
     browserStarting = null;
   }
+}
+
+function displayProcessRunning(process) {
+  return Boolean(process && process.exitCode === null && !process.killed);
+}
+
+function isDisplayRuntimeRunning() {
+  return displayProcessRunning(xvfbProcess) &&
+    displayProcessRunning(fluxboxProcess);
+}
+
+function isVncServerRunning() {
+  return displayProcessRunning(vncProcess);
+}
+
+function startDisplayProcess(command, args, label) {
+  const child = spawn(command, args, {
+    stdio: ["ignore", "ignore", "pipe"],
+    env: { ...process.env, DISPLAY: ":99" }
+  });
+  child.stderr.on("data", (chunk) => {
+    console.error(label + ":", String(chunk).trim());
+  });
+  child.on("error", (error) => {
+    lastWorkerError = label + " could not start: " + errorMessage(error);
+    console.error(lastWorkerError);
+  });
+  child.on("exit", (code, signal) => {
+    console.log(label + " exited", { code, signal });
+  });
+  return child;
+}
+
+async function ensureDisplayRuntime() {
+  if (displayRuntimeStopping) {
+    await displayRuntimeStopping;
+  }
+  if (isDisplayRuntimeRunning()) {
+    return;
+  }
+  if (displayRuntimeStarting) {
+    return displayRuntimeStarting;
+  }
+
+  displayRuntimeStarting = (async () => {
+    await stopDisplayRuntime();
+    console.log("Starting X display runtime for Kindle work");
+    xvfbProcess = startDisplayProcess("Xvfb", [
+      ":99", "-screen", "0", "1440x900x24", "-nolisten", "tcp"
+    ], "Xvfb");
+    await waitForDisplay();
+    fluxboxProcess = startDisplayProcess(
+      "fluxbox",
+      ["-display", ":99"],
+      "Fluxbox"
+    );
+    await waitForProcess(fluxboxProcess, "Fluxbox");
+  })();
+
+  try {
+    await displayRuntimeStarting;
+  } catch (error) {
+    await stopDisplayRuntime();
+    throw error;
+  } finally {
+    displayRuntimeStarting = null;
+  }
+}
+
+async function ensureVncServer() {
+  await ensureDisplayRuntime();
+  if (isVncServerRunning()) {
+    return;
+  }
+  vncProcess = startDisplayProcess("x11vnc", [
+    "-display", ":99", "-forever", "-shared", "-nopw", "-localhost",
+    "-rfbport", "5900"
+  ], "x11vnc");
+  await waitForProcess(vncProcess, "x11vnc");
+}
+
+async function waitForDisplay() {
+  const socketPath = "/tmp/.X11-unix/X99";
+  const deadline = Date.now() + 10_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(socketPath)) {
+      return;
+    }
+    if (!displayProcessRunning(xvfbProcess)) {
+      throw new Error("Xvfb exited before the display became ready");
+    }
+    await delay(50);
+  }
+  throw new Error("Xvfb did not make display :99 ready in time");
+}
+
+async function waitForProcess(child, label) {
+  await delay(150);
+  if (!displayProcessRunning(child)) {
+    throw new Error(label + " exited while starting");
+  }
+}
+
+async function stopDisplayRuntime() {
+  if (displayRuntimeStopping) {
+    return displayRuntimeStopping;
+  }
+  displayRuntimeStopping = (async () => {
+    await stopDisplayProcess(vncProcess, "x11vnc");
+    vncProcess = null;
+    await stopDisplayProcess(fluxboxProcess, "Fluxbox");
+    fluxboxProcess = null;
+    await stopDisplayProcess(xvfbProcess, "Xvfb");
+    xvfbProcess = null;
+  })();
+  try {
+    await displayRuntimeStopping;
+  } finally {
+    displayRuntimeStopping = null;
+  }
+}
+
+async function stopDisplayProcess(child, label) {
+  if (!displayProcessRunning(child)) {
+    return;
+  }
+  await new Promise((resolve) => {
+    const timeout = setTimeout(() => {
+      child.kill("SIGKILL");
+      resolve();
+    }, 5_000);
+    timeout.unref();
+    child.once("exit", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+    child.kill("SIGTERM");
+  });
+  console.log("Stopped " + label);
+}
+
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function isBrowserRunning() {
@@ -505,6 +733,7 @@ async function closeBrowserIfIdle() {
       browserContext = null;
       browserPage = null;
     }
+    await stopDisplayRuntime();
     console.log("Closed idle Chromium");
     return true;
   } finally {
@@ -637,9 +866,40 @@ async function markJobWaitingForAuth(job) {
 }
 
 async function processQueueJob(job) {
+  if (
+    job.resumeVerification &&
+    job.verificationBaseline
+  ) {
+    job.status = "verifying";
+    job.resumeVerification = false;
+    job.updatedAt = new Date().toISOString();
+    await saveQueue();
+
+    const page = await ensureBrowser();
+    await page.goto(SEND_TO_KINDLE_URL, {
+      waitUntil: "domcontentloaded"
+    });
+
+    try {
+      const evidence =
+        await waitForAmazonLibraryConfirmation(
+          page,
+          job.filename,
+          job.verificationBaseline
+        );
+      await finalizeVerifiedJob(job, evidence);
+      return;
+    } catch (error) {
+      await saveKindleDiagnostic(page, job, error);
+      throw error;
+    }
+  }
+
   job.status = "processing";
   job.attempts += 1;
   job.error = "";
+  job.amazonStatus = "";
+  job.verificationEvidence = null;
   job.updatedAt = new Date().toISOString();
   await saveQueue();
 
@@ -652,7 +912,11 @@ async function processQueueJob(job) {
 
   try {
     await downloadObject(job.key, tempPath);
-    await uploadFileToKindle(tempPath, job.filename);
+    const evidence = await uploadFileToKindle(
+      tempPath,
+      job
+    );
+    job.verificationEvidence = evidence;
   } finally {
     await fsp.rm(jobTempDir, {
       recursive: true,
@@ -660,11 +924,26 @@ async function processQueueJob(job) {
     });
   }
 
+  await finalizeVerifiedJob(
+    job,
+    job.verificationEvidence
+  );
+}
+
+async function finalizeVerifiedJob(job, evidence) {
   await safeDeleteObject(job.key);
+  job.amazonStatus = "in_library";
+  job.verificationEvidence = evidence;
+  job.verifiedAt = new Date().toISOString();
   job.status = "sent";
   job.sentAt = new Date().toISOString();
   job.updatedAt = job.sentAt;
   await saveQueue();
+  console.log(
+    "Kindle job verified in Amazon library",
+    job.id,
+    job.filename
+  );
 }
 
 async function recordQueueJobFailure(job, error) {
@@ -684,7 +963,8 @@ async function recordQueueJobFailure(job, error) {
   await saveQueue();
 }
 
-async function uploadFileToKindle(filePath, filename) {
+async function uploadFileToKindle(filePath, job) {
+  const filename = job.filename;
   const page = await ensureBrowser();
   await page.goto(SEND_TO_KINDLE_URL, {
     waitUntil: "domcontentloaded"
@@ -716,85 +996,341 @@ async function uploadFileToKindle(filePath, filename) {
     await fileChooser.setFiles(filePath);
   }
 
-  await page.getByText(/ready to send/i)
-    .waitFor({ state: "visible", timeout: 120_000 });
+  await waitForKindleFileReady(page, filename);
+  await requireAddToLibrary(page);
 
-  const libraryCheckbox = page.getByLabel(
-    /add to (your )?library/i
+  const baseline = await collectKindleEvidence(
+    page,
+    filename
   );
-  if (await libraryCheckbox.count() === 1) {
-    if (!(await libraryCheckbox.isChecked())) {
-      await libraryCheckbox.check();
-    }
-  }
+  job.verificationBaseline = baseline;
+  job.updatedAt = new Date().toISOString();
+  await saveQueue();
 
   await clickKindleSendButton(page);
 
-  const result = await Promise.race([
-    page.waitForFunction(
-      (expectedFilename) => {
-        const text = document.body?.innerText || "";
-        return text.includes(expectedFilename) &&
-          /in library|recently sent files|successfully sent|sent to your kindle|files? (have|has) been sent/i
-            .test(text) &&
-          !/ready to send/i.test(text);
-      },
-      filename,
-      { timeout: 15 * 60_000 }
-    )
-      .then(() => "success"),
-    page.waitForFunction(
-      (expectedFilename) => {
-        const text = document.body?.innerText || "";
-        return text.includes(expectedFilename) &&
-          /could not be sent|failed|file detail error|please fix errors before sending/i
-            .test(text);
-      },
-      filename,
-      { timeout: 15 * 60_000 }
-    )
-      .then(() => "failure"),
-    page.waitForURL(/signin|ap\/signin/i, { timeout: 15 * 60_000 })
-      .then(() => "auth")
-  ]);
+  job.status = "verifying";
+  job.submittedAt = new Date().toISOString();
+  job.updatedAt = job.submittedAt;
+  await saveQueue();
+  console.log(
+    "Kindle job submitted to Amazon; waiting for In Library",
+    job.id,
+    filename
+  );
 
-  if (result === "auth") {
-    throw authRequired();
+  try {
+    return await waitForAmazonLibraryConfirmation(
+      page,
+      filename,
+      baseline
+    );
+  } catch (error) {
+    await saveKindleDiagnostic(page, job, error);
+    throw error;
   }
-  if (result !== "success") {
-    const bodyText = await page.locator("body")
-      .innerText({ timeout: 5_000 })
-      .catch(() => "");
+}
+
+async function waitForKindleFileReady(page, filename) {
+  const deadline = Date.now() + 120_000;
+
+  while (Date.now() < deadline) {
+    if (/signin|ap\/signin/i.test(page.url())) {
+      throw authRequired();
+    }
+
+    const evidence = await collectKindleEvidence(page, filename);
+    if (evidence.readyRows.length > 0) {
+      return evidence;
+    }
+    if (evidence.failureRows.length > 0) {
+      throw new Error(evidence.failureRows[0]);
+    }
+
+    await page.waitForTimeout(1_000);
+  }
+
+  throw new Error(
+    "Amazon did not finish preparing the selected PDF"
+  );
+}
+
+async function requireAddToLibrary(page) {
+  const checkboxes = page.getByLabel(
+    /add to (your )?library/i
+  );
+  const count = await checkboxes.count();
+  let visibleCheckbox = null;
+
+  for (let index = 0; index < count; index += 1) {
+    const candidate = checkboxes.nth(index);
+    if (await candidate.isVisible().catch(() => false)) {
+      visibleCheckbox = candidate;
+      break;
+    }
+  }
+
+  if (!visibleCheckbox) {
     throw new Error(
-      bodyText.slice(0, 1000) ||
-      "Amazon rejected the document"
+      "Amazon Add to your library checkbox was not found"
+    );
+  }
+
+  if (!(await visibleCheckbox.isChecked())) {
+    await visibleCheckbox.check();
+  }
+
+  if (!(await visibleCheckbox.isChecked())) {
+    throw new Error(
+      "Amazon Add to your library checkbox is not enabled"
+    );
+  }
+}
+
+async function waitForAmazonLibraryConfirmation(
+  page,
+  filename,
+  baseline
+) {
+  const deadline = Date.now() + 15 * 60_000;
+
+  while (Date.now() < deadline) {
+    if (/signin|ap\/signin/i.test(page.url())) {
+      throw authRequired();
+    }
+
+    const evidence = await collectKindleEvidence(page, filename);
+    const newFailure = firstNewEvidence(
+      evidence.failureRows,
+      baseline.failureRows
+    );
+    if (newFailure) {
+      throw new Error(newFailure);
+    }
+
+    const newInLibrary = firstNewEvidence(
+      evidence.inLibraryRows,
+      baseline.inLibraryRows
+    );
+    if (newInLibrary) {
+      return {
+        status: "in_library",
+        row: newInLibrary
+      };
+    }
+
+    await page.waitForTimeout(1_500);
+  }
+
+  throw new Error(
+    "Amazon did not confirm the PDF as In Library within 15 minutes"
+  );
+}
+
+function firstNewEvidence(current, baseline) {
+  const previous = new Map();
+  for (const item of baseline || []) {
+    previous.set(item, (previous.get(item) || 0) + 1);
+  }
+
+  for (const item of current || []) {
+    const count = previous.get(item) || 0;
+    if (count === 0) {
+      return item;
+    }
+    previous.set(item, count - 1);
+  }
+
+  return "";
+}
+
+async function collectKindleEvidence(page, filename) {
+  return page.evaluate((expectedFilename) => {
+    const normalize = (value) =>
+      String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    const expected = normalize(expectedFilename);
+    const filenameElements = Array.from(
+      document.querySelectorAll("body *")
+    ).filter((element) => {
+      const text = normalize(element.textContent);
+      if (
+        !text.includes(expected) ||
+        text.length > expected.length + 120
+      ) {
+        return false;
+      }
+
+      return !Array.from(element.children).some((child) =>
+        normalize(child.textContent).includes(expected)
+      );
+    });
+
+    const rowsFor = (pattern) => {
+      const rows = [];
+
+      const statusElements = Array.from(
+        document.querySelectorAll("body *")
+      ).filter((element) => {
+        const text = normalize(element.textContent);
+        if (!text || text.length > 200 || !pattern.test(text)) {
+          return false;
+        }
+
+        return !Array.from(element.children).some((child) =>
+          pattern.test(normalize(child.textContent))
+        );
+      });
+
+      for (const filenameElement of filenameElements) {
+        let candidate = filenameElement;
+        let foundAncestor = false;
+
+        for (let depth = 0; candidate && depth < 9; depth += 1) {
+          const text = normalize(candidate.innerText);
+          if (text.length > 2_000) {
+            break;
+          }
+          const pdfReferences =
+            text.match(/\.pdf\b/gi) || [];
+          if (pdfReferences.length > 1) {
+            break;
+          }
+          if (text.includes(expected) && pattern.test(text)) {
+            rows.push(text);
+            foundAncestor = true;
+            break;
+          }
+          candidate = candidate.parentElement;
+        }
+
+        if (foundAncestor) {
+          continue;
+        }
+
+        const filenameRect =
+          filenameElement.getBoundingClientRect();
+        if (filenameRect.width <= 0 || filenameRect.height <= 0) {
+          continue;
+        }
+        const filenameCenterY =
+          filenameRect.top + filenameRect.height / 2;
+
+        for (const statusElement of statusElements) {
+          const statusRect =
+            statusElement.getBoundingClientRect();
+          if (statusRect.width <= 0 || statusRect.height <= 0) {
+            continue;
+          }
+
+          const statusCenterY =
+            statusRect.top + statusRect.height / 2;
+          const sameVisualRow =
+            Math.abs(statusCenterY - filenameCenterY) <=
+              Math.max(
+                10,
+                Math.min(
+                  filenameRect.height,
+                  statusRect.height
+                )
+              );
+          const statusIsBesideFilename =
+            statusRect.left >= filenameRect.left - 20;
+
+          if (sameVisualRow && statusIsBesideFilename) {
+            rows.push(
+              expected + " " +
+                normalize(statusElement.textContent)
+            );
+            break;
+          }
+        }
+      }
+
+      return rows;
+    };
+
+    return {
+      readyRows: rowsFor(/ready to send/i),
+      inLibraryRows: rowsFor(/\bin library\b/i),
+      failureRows: rowsFor(
+        /could not be sent|failed|file detail error|please fix errors before sending|unsupported|rejected/i
+      )
+    };
+  }, filename);
+}
+
+async function saveKindleDiagnostic(page, job, error) {
+  const stamp = new Date().toISOString()
+    .replace(/[:.]/g, "-");
+  const base = path.join(
+    DIAGNOSTICS_DIR,
+    sanitizeFileName(job.id + "-" + stamp)
+  );
+
+  try {
+    await page.screenshot({
+      path: base + ".png",
+      fullPage: true
+    });
+    const evidence = await collectKindleEvidence(
+      page,
+      job.filename
+    ).catch(() => ({
+      readyRows: [],
+      inLibraryRows: [],
+      failureRows: []
+    }));
+    await fsp.writeFile(
+      base + ".json",
+      JSON.stringify({
+        job: publicJob(job),
+        url: safePageUrl(),
+        error: errorMessage(error),
+        evidence
+      }, null, 2)
+    );
+    job.diagnostic = path.basename(base);
+    await saveQueue();
+  } catch (diagnosticError) {
+    console.error(
+      "Cannot save Kindle diagnostic",
+      job.id,
+      diagnosticError
     );
   }
 }
 
 async function clearExistingKindleFiles(page) {
-  const removeAll =
-    page.getByText(/remove all/i);
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const removeAll = page.getByText(/remove all/i);
+    const count = await removeAll.count();
+    let clicked = false;
 
-  if (await removeAll.count() === 0) {
-    return;
+    for (let index = 0; index < count; index += 1) {
+      const candidate = removeAll.nth(index);
+      if (!(await candidate.isVisible().catch(() => false))) {
+        continue;
+      }
+
+      await candidate.scrollIntoViewIfNeeded({
+        timeout: 3_000
+      }).catch(() => {});
+      await candidate.click();
+      await page.waitForTimeout(1_000);
+      clicked = true;
+      break;
+    }
+
+    if (!clicked) {
+      return;
+    }
   }
 
-  const candidate =
-    removeAll.first();
-
-  try {
-    await candidate.scrollIntoViewIfNeeded({
-      timeout: 3_000
-    });
-  } catch {
-    return;
-  }
-
-  if (await candidate.isVisible().catch(() => false)) {
-    await candidate.click();
-    await page.waitForTimeout(1_000);
-  }
+  throw new Error(
+    "Amazon upload area could not be cleared"
+  );
 }
 
 async function clickKindleSendButton(page) {
@@ -900,11 +1436,20 @@ async function loadQueue() {
     if (!Array.isArray(parsed)) {
       return [];
     }
-    return parsed.map((job) =>
-      job.status === "processing"
-        ? { ...job, status: "queued" }
-        : job
-    );
+    return parsed.map((job) => {
+      if (job.status === "processing") {
+        return { ...job, status: "queued" };
+      }
+      if (job.status === "verifying") {
+        return {
+          ...job,
+          status: "queued",
+          resumeVerification:
+            Boolean(job.verificationBaseline)
+        };
+      }
+      return job;
+    });
   } catch (error) {
     if (error?.code !== "ENOENT") {
       console.error("Cannot load queue", error);
@@ -926,6 +1471,7 @@ function countQueueStatuses() {
   const counts = {
     queued: 0,
     processing: 0,
+    verifying: 0,
     waitingAuth: 0,
     sent: 0,
     failed: 0
@@ -933,6 +1479,7 @@ function countQueueStatuses() {
   for (const job of queue) {
     if (job.status === "queued") counts.queued += 1;
     if (job.status === "processing") counts.processing += 1;
+    if (job.status === "verifying") counts.verifying += 1;
     if (job.status === "waiting_auth") counts.waitingAuth += 1;
     if (job.status === "sent") counts.sent += 1;
     if (job.status === "failed") counts.failed += 1;
@@ -967,7 +1514,13 @@ function publicJob(job) {
     error: job.error,
     createdAt: job.createdAt,
     updatedAt: job.updatedAt,
-    sentAt: job.sentAt || null
+    submittedAt: job.submittedAt || null,
+    verifiedAt: job.verifiedAt || null,
+    sentAt: job.sentAt || null,
+    amazonStatus: job.amazonStatus || "",
+    verificationEvidence:
+      job.verificationEvidence || null,
+    diagnostic: job.diagnostic || ""
   };
 }
 

@@ -1389,6 +1389,8 @@ const htmlContent = `<!DOCTYPE html>
         Number(counts.queued || 0) +
         " · Uploading: " +
         Number(counts.processing || 0) +
+        " · Verifying in Amazon: " +
+        Number(counts.verifying || 0) +
         " · Waiting for login: " +
         Number(counts.waitingAuth || 0) +
         " · Sent: " +
@@ -1440,7 +1442,7 @@ const htmlContent = `<!DOCTYPE html>
 
       if (successKindleSummary.sentToKindle) {
         successKindleQueue.textContent =
-          "This run: queued " +
+          "This run: Amazon confirmed " +
           formatPdfCount(
             successKindleSummary.queuedThisRun
           ) +
@@ -1660,12 +1662,9 @@ const htmlContent = `<!DOCTYPE html>
       }
 
       if (
-        data.sessionState ===
-          "needs_auth" ||
-        (
-          !data.sessionState &&
-          !data.connected
-        )
+        !data.connected ||
+        data.sessionState !==
+          "connected"
       ) {
         throw new Error(
           "Amazon session is not connected. Click Connect Amazon, finish login, then Refresh status."
@@ -2945,7 +2944,7 @@ const htmlContent = `<!DOCTYPE html>
 
       downloadStatus.textContent =
         sendToKindleForRun
-          ? "PDF files queued for Kindle. They may take a few minutes to appear on the device."
+          ? "Amazon confirmed the PDF files in your Kindle library. Device sync may take a few minutes."
           : "Archive downloaded. Kindle auto-send is off.";
 
       setSuccessKindleSummary(
@@ -3782,36 +3781,272 @@ const htmlContent = `<!DOCTYPE html>
       }
 
 
-      const uploadResponse = await fetch(
-        ticket.uploadUrl,
-        {
-          method: "PUT",
-          headers: {
-            "Content-Type":
-              "application/pdf"
-          },
-          body: blob
-        }
-      );
+      const maxUploadAttempts = 5;
+      let uploadResult = null;
+      let lastUploadError = null;
 
 
-      if (!uploadResponse.ok) {
+      for (
+        let attempt = 1;
+        attempt <= maxUploadAttempts;
+        attempt += 1
+      ) {
 
-        let errorText =
-          "Cannot queue PDF for Kindle";
+        progressText.textContent =
+          "Uploading PDF to Kindle worker (attempt " +
+          attempt +
+          "/" +
+          maxUploadAttempts +
+          "): " +
+          fileName;
 
         try {
-          const data =
-            await uploadResponse.json();
-          errorText = data.error || errorText;
-        } catch (_) {}
+          const uploadResponse = await fetch(
+            ticket.uploadUrl,
+            {
+              method: "PUT",
+              headers: {
+                "Content-Type":
+                  "application/pdf"
+              },
+              body: blob
+            }
+          );
 
-        throw new Error(errorText);
+          let currentResult = {};
+
+          try {
+            currentResult =
+              await uploadResponse.json();
+          } catch (_) {}
+
+          if (uploadResponse.ok) {
+            uploadResult = currentResult;
+            break;
+          }
+
+          lastUploadError = new Error(
+            currentResult.error ||
+            "Cannot queue PDF for Kindle"
+          );
+        } catch (error) {
+          lastUploadError = error;
+        }
+
+
+        const existingJob =
+          await getKindleJobIfExists(
+            ticket.jobId
+          );
+
+        if (existingJob) {
+          uploadResult = {
+            job: existingJob
+          };
+          break;
+        }
+
+        if (attempt < maxUploadAttempts) {
+          progressText.textContent =
+            "Retrying interrupted Kindle upload: " +
+            fileName;
+
+          await new Promise(
+            function (resolve) {
+              setTimeout(
+                resolve,
+                Math.min(
+                  3000 * attempt,
+                  10000
+                )
+              );
+            }
+          );
+        }
 
       }
 
 
-      await refreshKindleStatus();
+      if (!uploadResult) {
+        throw lastUploadError ||
+          new Error(
+            "Cannot queue PDF for Kindle"
+          );
+      }
+
+
+      const jobId =
+        uploadResult.job?.id ||
+        ticket.jobId;
+
+      if (!jobId) {
+        throw new Error(
+          "Kindle uploader did not return a job ID"
+        );
+      }
+
+
+      await waitForKindleJob(
+        jobId,
+        fileName
+      );
+
+
+      const refreshed =
+        await refreshKindleStatus();
+
+      if (!refreshed) {
+        throw new Error(
+          "Amazon confirmed the file, but Kindle status refresh failed"
+        );
+      }
+
+    }
+
+
+    async function getKindleJobIfExists(
+      jobId
+    ) {
+
+      if (!jobId) {
+        return null;
+      }
+
+      try {
+        const response = await fetch(
+          "/kindle/jobs/" +
+            encodeURIComponent(jobId),
+          { cache: "no-store" }
+        );
+
+        if (response.status === 404) {
+          return null;
+        }
+
+        const data = await response.json();
+
+        return response.ok
+          ? (data.job || null)
+          : null;
+      } catch (_) {
+        return null;
+      }
+
+    }
+
+
+    async function waitForKindleJob(
+      jobId,
+      fileName
+    ) {
+
+      const deadline =
+        Date.now() + 50 * 60 * 1000;
+
+      let consecutiveStatusErrors = 0;
+
+
+      while (Date.now() < deadline) {
+
+        let response;
+        let data;
+
+        try {
+          response = await fetch(
+            "/kindle/jobs/" +
+              encodeURIComponent(jobId),
+            { cache: "no-store" }
+          );
+
+          data = await response.json();
+
+          if (!response.ok) {
+            throw new Error(
+              data.error ||
+              "Kindle job status unavailable"
+            );
+          }
+
+          consecutiveStatusErrors = 0;
+        } catch (error) {
+          consecutiveStatusErrors += 1;
+
+          if (consecutiveStatusErrors >= 5) {
+            throw error;
+          }
+
+          await new Promise(
+            function (resolve) {
+              setTimeout(resolve, 2500);
+            }
+          );
+          continue;
+        }
+
+
+        const job = data.job || {};
+
+        if (job.status === "sent") {
+          if (
+            job.amazonStatus !==
+              "in_library"
+          ) {
+            throw new Error(
+              "Worker marked the file sent without Amazon library confirmation"
+            );
+          }
+
+          progressText.textContent =
+            "Confirmed in Amazon library: " +
+            fileName;
+
+          return job;
+        }
+
+        if (job.status === "failed") {
+          throw new Error(
+            job.error ||
+            "Amazon did not accept " +
+              fileName
+          );
+        }
+
+        if (job.status === "waiting_auth") {
+          throw new Error(
+            "Amazon session expired while sending " +
+              fileName +
+              ". Reconnect Amazon and try again."
+          );
+        }
+
+        if (job.status === "verifying") {
+          progressText.textContent =
+            "Waiting for Amazon to confirm In Library: " +
+            fileName;
+        } else if (job.status === "processing") {
+          progressText.textContent =
+            "Uploading to Amazon: " +
+            fileName;
+        } else {
+          progressText.textContent =
+            "Queued for Amazon: " +
+            fileName;
+        }
+
+
+        await new Promise(
+          function (resolve) {
+            setTimeout(resolve, 2500);
+          }
+        );
+
+      }
+
+
+      throw new Error(
+        "Timed out waiting for Amazon to confirm " +
+          fileName
+      );
 
     }
 
@@ -4187,6 +4422,36 @@ app.get(
           error:
             error.message ||
             "Kindle worker unavailable"
+        },
+        502
+      );
+    }
+
+  }
+);
+
+
+app.get(
+  "/kindle/jobs/:id",
+  async (c) => {
+
+    try {
+      const result =
+        await getKindleWorkerJob(
+          c.req.param("id")
+        );
+
+
+      return c.json(
+        result.data,
+        result.status
+      );
+    } catch (error) {
+      return c.json(
+        {
+          error:
+            error.message ||
+            "Kindle job status unavailable"
         },
         502
       );
@@ -4933,6 +5198,31 @@ async function getKindleWorkerStatus() {
 
 
   return result.data;
+
+}
+
+
+async function getKindleWorkerJob(id) {
+
+  const jobId = String(id || "").trim();
+
+  if (!/^[A-Za-z0-9-]{1,100}$/.test(jobId)) {
+    throw new Error(
+      "Invalid Kindle job ID"
+    );
+  }
+
+  const result =
+    await fetchKindleWorkerJson(
+      "/api/jobs/" +
+        encodeURIComponent(jobId)
+    );
+
+
+  return {
+    data: result.data,
+    status: result.response.status
+  };
 
 }
 

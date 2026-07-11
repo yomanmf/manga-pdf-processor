@@ -6,6 +6,7 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     fluxbox \
     novnc \
+    tini \
     x11vnc \
     xvfb \
   && rm -rf /var/lib/apt/lists/*
@@ -21,4 +22,4 @@ RUN npm install --omit=dev
 COPY server.mjs start.sh ./
 RUN chmod +x /app/start.sh
 
-CMD ["/app/start.sh"]
+CMD ["/usr/bin/tini", "--", "/app/start.sh"]
