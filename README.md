@@ -1,23 +1,23 @@
 # Manga PDF Processor
 
-Source backup for the Railway services that process manga PDFs/CBZ files,
+Services deployed in Yandex Cloud that process manga PDFs/CBZ files,
 download chapters from WeebCentral, merge manga pages for landscape reading,
 and optionally send the resulting PDF files to Kindle.
 
 ## Architecture (plain-language overview)
 
-The project is made of two Railway services and a browser interface:
+The project is made of two Yandex Cloud services and a browser interface:
 
 ```mermaid
 flowchart LR
-    User["User in browser"] --> App["Manga PDF Processor\nRailway Function"]
+    User["User in browser"] --> App["Manga PDF Processor\nYandex Cloud"]
     App --> Weeb["WeebCentral\nchapters and images"]
     Weeb --> App
     App --> Browser["Browser processing\nJSZip + PDF-lib"]
     Browser --> Merge["Manga page order\nand merge up to 200 MB"]
     Merge --> Download["Download ZIP"]
     Merge --> Ticket["Kindle upload ticket"]
-    Ticket --> Worker["Kindle Uploader\nRailway service"]
+    Ticket --> Worker["Kindle Uploader\nYandex Cloud"]
     Worker --> Storage["Object Storage\ntemporary PDFs"]
     Worker --> Queue["Persistent queue\nand statuses"]
     Queue --> Amazon["Amazon Send to Kindle\nbrowser session"]
@@ -45,7 +45,7 @@ flowchart LR
 
 ### Where data lives
 
-- The main web app is the user-facing entry point on Railway.
+- The main web app is the user-facing entry point in Yandex Cloud.
 - The Kindle uploader is isolated from the main app so Amazon browser
   automation and its queue can restart independently.
 - The Amazon Chromium browser and its supporting display processes start only
@@ -55,8 +55,8 @@ flowchart LR
   refreshes immediately when the tab becomes visible again.
 - Temporary PDFs are stored in the configured S3-compatible object storage.
 - The queue and Amazon browser profile are stored on the Kindle uploader's
-  persistent Railway volume.
-- GitHub is the source-of-truth backup; Railway contains the running copies.
+  persistent disk mounted at `/data`.
+- GitHub is the source of truth; Yandex Cloud contains the running services.
 
 ### Failure boundaries
 
@@ -76,7 +76,7 @@ there is no work. Its heavier components are created on demand:
    document through the stored Amazon session.
 2. A manual **Connect Amazon** action additionally starts the local-only VNC
    server so the Amazon login can be completed in the browser. The Amazon
-   password never enters the app or Railway variables.
+   password never enters the app or cloud environment variables.
 3. When no file is processing, no VNC client is connected and the temporary
    connection link has expired, Chromium and the display processes are closed
    after `BROWSER_IDLE_MS` (60 seconds by default).
@@ -87,15 +87,14 @@ the container init process so stopped child processes are reaped reliably.
 
 ## Services
 
-- `work/manga-pdf-processor/index.ts` — main web app deployed on Railway as a
-  Function image. Railway stores the function source in `FUNCTION_SOURCE_*`
-  variables.
-- `work/kindle-uploader/` — Kindle uploader worker deployed as a Docker-based
-  Railway service.
+- `work/manga-pdf-processor/index.ts` — main web application deployed in
+  Yandex Cloud.
+- `work/kindle-uploader/` — Docker-based Kindle uploader worker deployed in
+  Yandex Cloud.
 
 ## Main app environment variables
 
-Keep values only in Railway variables, never in git:
+Keep values only in the Yandex Cloud runtime environment, never in git:
 
 - `APP_PASSWORD`
 - `APP_SESSION_TOKEN`
@@ -104,7 +103,7 @@ Keep values only in Railway variables, never in git:
 
 ## Kindle uploader environment variables
 
-Keep values only in Railway variables, never in git:
+Keep values only in the Yandex Cloud runtime environment, never in git:
 
 - `KINDLE_SHARED_SECRET`
 - `PUBLIC_BASE_URL`
@@ -136,4 +135,4 @@ display runtime together with browser work.
 ## Backup rule
 
 After every code change, push the source to GitHub first, then deploy to
-Railway. Railway is runtime state; GitHub is the source of truth.
+Yandex Cloud. Cloud resources are runtime state; GitHub is the source of truth.
