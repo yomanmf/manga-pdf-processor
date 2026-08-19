@@ -1,5 +1,7 @@
 # Manga PDF Processor
 
+> [Open the interactive architecture diagram](docs/architecture.html?raw=1)
+
 Services deployed in Yandex Cloud that process manga PDFs/CBZ files,
 download chapters from WeebCentral, merge manga pages for landscape reading,
 and optionally send the resulting PDF files to Kindle.
